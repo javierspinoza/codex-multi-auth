@@ -360,6 +360,11 @@ export class PreemptiveQuotaScheduler {
 		}
 	}
 
+	/** Observation timestamp for distinguishing a newer confirmed quota recovery. */
+	getUpdatedAt(key: string): number | null {
+		return this.snapshots.get(key)?.updatedAt ?? null;
+	}
+
 	/** Forget one verified recovered model; preserve sibling quota buckets. */
 	clear(key: string): void {
 		this.snapshots.delete(key);

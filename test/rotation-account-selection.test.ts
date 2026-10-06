@@ -314,6 +314,17 @@ describe("chooseAccount hybrid tier and linear fallback", () => {
 });
 
 describe("chooseAccount sequential mode (issue #509)", () => {
+	it("keeps the active account despite native quota rankings and a conflicting preferred index", () => {
+		const accountManager = manager();
+		const active = accountManager.getAccountByIndex(0)!;
+		accountManager.adoptActiveAccountForFamily(active.index, FAMILY);
+		const preference = (remainingPercent: number) => ({ plan: "subscription" as const, remainingPercent, resetAtMs: NOW + 60_000, urgency: null, exhausted: false, observedAt: NOW });
+		const selected = chooseAccount({ ...baseParams(accountManager), schedulingStrategy: "sequential", preferredIndex: 1,
+			policy: { ...policyWith(), priorityByAccount: { 0: 1, 1: 1, 2: 1 } },
+			subscriptionQuotaByAccount: { 0: preference(3), 1: preference(100), 2: preference(100) },
+		});
+		expect(selected?.index).toBe(0);
+	});
 	it("follows the drain-first selector and skips the affinity tier", () => {
 		const accountManager = manager();
 		const sequential = vi

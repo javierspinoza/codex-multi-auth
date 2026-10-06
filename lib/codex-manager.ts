@@ -2,6 +2,7 @@ import { runResetsCommand } from "./codex-manager/commands/resets.js";
 import { loadResetCreditState } from "./runtime/account-reset-credits.js";
 import { loadApiRoutes } from "./api-route-store.js";
 import { loadInferenceRequestTimes } from "./runtime/inference-activity.js";
+import { loadSequentialPrimaryAccountKey } from "./runtime/sequential-account-coordinator.js";
 import { loadModelInventory, refreshAndPrintModelInventory } from "./runtime/model-discovery-status.js";
 import {
 	AUTH_INVALIDATION_MARKER,
@@ -120,6 +121,7 @@ import {
 import { applyUiThemeFromDashboardSettings } from "./codex-manager/settings-hub.js";
 import {
 	getCodexRuntimeRotationProxy,
+	getSchedulingStrategy,
 	getPluginConfigExplainReport,
 	loadPluginConfig,
 	savePluginConfig,
@@ -437,6 +439,8 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 		...createStatusCommandDeps(rest),
 		runHola: runListHolaCommand,
 		isRotationEnabled: () => getCodexRuntimeRotationProxy(loadPluginConfig()),
+		getSchedulingStrategy: () => getSchedulingStrategy(loadPluginConfig()),
+		loadSequentialPrimaryAccountKey,
 		refreshQuotaCache: (storage, cache, maxAgeMs) => refreshQuotaCacheForMenu(storage, cache, maxAgeMs, undefined, { freshOnly: true }),
 	})],
 	["status", (rest) => runStatusCommand(createStatusCommandDeps(rest))],

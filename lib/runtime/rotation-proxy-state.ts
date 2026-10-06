@@ -16,6 +16,7 @@ import {
 } from "./runtime-observability.js";
 import type { RuntimeRotationProxyStatus } from "./rotation-server-types.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
+import type { SequentialAccountCoordinator } from "./sequential-account-coordinator.js";
 
 /**
  * Per-instance configuration resolved once in `startRuntimeRotationProxy`,
@@ -33,6 +34,8 @@ export interface RotationProxyStateInit {
 	activeAccountManager: AccountManager;
 	routingMutexMode: "enabled" | "legacy";
 	schedulingStrategy: "hybrid" | "sequential";
+	sequentialCoordinator?: SequentialAccountCoordinator;
+	sequentialQuotaThresholds?: { fiveHours: number; weekly: number };
 	fetchImpl: typeof fetch;
 	upstreamBaseUrl: string;
 	clientApiKey: string;
@@ -91,6 +94,7 @@ export interface RotationProxyState extends RotationProxyStateInit {
  catalogApiRoutes?:ApiRouteCredential[];
  catalogInventory?:ModelInventory;
  subscriptionQuotaObservations?: Map<string, QuotaCacheEntry>;
+	sequentialQuotaObservations?: Map<string, QuotaCacheEntry>;
 	readonly threadGoalFallbacks: Map<string, string | null>;
 	lastGlobalAccountIndex: number | null;
 	lastGlobalSwitchAt: number;

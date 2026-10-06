@@ -1745,8 +1745,10 @@ const SCHEDULING_STRATEGY_MODES = new Set<string>(["hybrid", "sequential"]);
  * - `"sequential"` (a.k.a. drain-first) sticks to one active account and only
  *   advances to the next available account once the current one is fully
  *   exhausted (rate-limited / cooling down / circuit-open). Earlier accounts
- *   become eligible again as soon as their quota window recovers, producing the
- *   staggered-recovery pattern requested in #509. A manual pin still overrides
+ *   become eligible again as soon as their quota window recovers. The proxy
+ *   prioritizes the earliest reported weekly reset day across projects, retaining
+ *   the active account within that day and reclaiming earlier recovered days.
+ *   Unknown weekly dates fall back to pool order. A manual pin still overrides
  *   this; sequential mode ignores per-session affinity so all new requests
  *   follow the single active account. The `CODEX_AUTH_SCHEDULING_STRATEGY` env
  *   var accepts the same two values for opt-in trials without editing settings.

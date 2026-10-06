@@ -16,6 +16,8 @@ const USAGE = "Usage: codex-multi-auth list [--json | --verbose | --hola [--json
 
 export interface ListCommandDeps extends StatusCommandDeps {
 	isRotationEnabled: () => boolean;
+	getSchedulingStrategy?: () => "hybrid" | "sequential";
+	loadSequentialPrimaryAccountKey?: () => Promise<string | null>;
 	runHola: (storage: AccountStorageV3 | null, options: ListHolaOptions) => Promise<number>;
 	refreshQuotaCache: (
 		storage: AccountStorageV3,
@@ -141,9 +143,11 @@ export async function runListCommand(args: string[], deps: ListCommandDeps): Pro
 	const resolvedDeps = { ...deps, loadAccounts: () => Promise.resolve(storage), loadQuotaCache: () => Promise.resolve(quotaCache), json };
 	if (json || verbose || !storage?.accounts.length) return runStatusCommand(resolvedDeps);
 	const activityKeys = storage.accounts.map(inferenceAccountKey);
-	const [snapshotResult, activityResult] = await Promise.allSettled([
+	const strategy = deps.getSchedulingStrategy?.() ?? "hybrid";
+	const [snapshotResult, activityResult, sharedPrimaryResult] = await Promise.allSettled([
 		deps.loadRuntimeObservabilitySnapshot?.() ?? Promise.resolve(null),
 		deps.loadInferenceRequestTimes?.(activityKeys) ?? Promise.resolve({}),
+		strategy === "sequential" ? deps.loadSequentialPrimaryAccountKey?.() ?? Promise.resolve(null) : Promise.resolve(null),
 	]);
 	const snapshotTimes = snapshotResult.status === "fulfilled" ? snapshotResult.value?.lastInferenceRequestAtByAccount : undefined;
 	const persistedTimes: Record<string, number> = activityResult.status === "fulfilled" ? activityResult.value : {};
@@ -205,7 +209,14 @@ export async function runListCommand(args: string[], deps: ListCommandDeps): Pro
 	const pin = storage.pinnedAccountIndex;
 	const pinned = typeof pin === "number" && Number.isInteger(pin) && pin >= 0 && pin < storage.accounts.length ? pin : null;
 	const rotationState = rotationEnabled ? pinned === null ? "activa" : "activa, cambio automático suspendido por fijación" : "inactiva";
-	logInfo(`Rotación: ${rotationState} · cuenta seleccionada: cuenta${selected + 1} (guardada)`);
+	const showSharedPrimary = rotationEnabled && strategy === "sequential";
+	logInfo(showSharedPrimary ? `Rotación: ${rotationState}` : `Rotación: ${rotationState} · cuenta seleccionada: cuenta${selected + 1} (guardada)`);
+	if (showSharedPrimary) {
+		const primaryKey = sharedPrimaryResult.status === "fulfilled" ? sharedPrimaryResult.value : null;
+		const primaryIndex = primaryKey ? activityKeys.indexOf(primaryKey) : -1;
+		logInfo(`Estrategia: secuencial · cuenta compartida: ${pinned !== null ? `cuenta${pinned + 1} (fijada)` : primaryIndex >= 0 ? `cuenta${primaryIndex + 1}` : "se define en la próxima solicitud"}`);
+		if (pinned === null) logInfo("Prioridad: día de reinicio semanal más próximo; mantiene la cuenta dentro del mismo día y vuelve a días anteriores si recuperan cuota.");
+	}
 	const latestInferenceAt = Math.max(...inferenceTimes.map(at => at ?? 0));
 	if (latestInferenceAt > 0) {
 		const latestAccounts = rows.filter(row => row.lastInferenceAt === latestInferenceAt).sort((a, b) => a.index - b.index).map(row => `cuenta${row.index + 1}`);
@@ -215,7 +226,7 @@ export async function runListCommand(args: string[], deps: ListCommandDeps): Pro
 	}
 	if (snapshotResult.status === "rejected" || activityResult.status === "rejected") logInfo("No se pudo leer parte del registro de actividad del proxy.");
 	logInfo("ÚLTIMA SOLICITUD: envío de chat o imagen por el proxy; — = sin registro. No incluye consultas de cuota ni confirma una solicitud en curso.");
-	logInfo("Los chats pueden usar cuentas distintas con rotación; este registro muestra actividad por cuenta, sin identificar cada chat.");
+	logInfo(strategy === "sequential" ? "Los proyectos que comparten el pool siguen la cuenta compartida con prioridad a la renovación semanal más próxima; el registro no identifica cada chat." : "Los chats pueden usar cuentas distintas con rotación; este registro muestra actividad por cuenta, sin identificar cada chat.");
 	if (pinned !== null) logInfo(`Cuenta fijada: cuenta${pinned + 1} · quitar fijación: codex-multi-auth unpin`);
 	if (!rotationEnabled) logInfo("Activar rotación: codex-multi-auth rotation enable");
 	logInfo("N/D: el servicio no devolvió ese dato o no se pudo consultar. No equivale a 0% ni confirma ausencia de límite.");

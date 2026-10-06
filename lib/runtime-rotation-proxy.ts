@@ -6,10 +6,12 @@ import { resetSnapshotQuota } from "./runtime/reset-credits.js";
 import { createResetCreditService, loadResetCreditState } from "./runtime/account-reset-credits.js";
 import { recoverResetQuota, applyConfirmedReset } from "./runtime/reset-credit-routing.js";
 import { readSubscriptionQuotaEvent } from "./runtime/subscription-quota-event.js";
-import { loadQuotaCache } from "./quota-cache.js";
-import { findQuotaCacheEntryForAccount } from "./quota-readiness.js";
+import { loadQuotaCache, saveQuotaCache } from "./quota-cache.js";
+import { findQuotaCacheEntryForAccount, quotaWorkspaceId, quotaWorkspaceKey } from "./quota-readiness.js";
 import { subscriptionQuotaPreference, compareSubscriptionQuota, type SubscriptionQuotaPreference } from "./runtime/subscription-quota-order.js";
 import { inferenceAccountKey } from "./runtime/inference-activity.js";
+import { SequentialAccountCoordinator } from "./runtime/sequential-account-coordinator.js";
+import { quotaConfirmsRecovery, weeklyResetPreference, type WeeklyResetPreference } from "./runtime/weekly-reset-order.js";
 import { modelScopeId, workspaceModelScopes } from "./runtime/workspace-model-scopes.js";
 import { RuntimeCapabilityFailures, classifyCapabilityFailure } from "./runtime/runtime-capability-failures.js";
 import { ResponseOutcome } from "./request/response-outcome.js";
@@ -1180,10 +1182,10 @@ export async function startRuntimeRotationProxy(
 		enabled: getPreemptiveQuotaEnabled(pluginConfig),
 		remainingPercentThresholdPrimary:
 			options.quotaRemainingPercentThreshold ??
-			(options.nativeOpenai ? 0 : getPreemptiveQuotaRemainingPercent5h(pluginConfig)),
+			(options.nativeOpenai && schedulingStrategy !== "sequential" ? 0 : getPreemptiveQuotaRemainingPercent5h(pluginConfig)),
 		remainingPercentThresholdSecondary:
 			options.quotaRemainingPercentThreshold ??
-			(options.nativeOpenai ? 0 : getPreemptiveQuotaRemainingPercent7d(pluginConfig)),
+			(options.nativeOpenai && schedulingStrategy !== "sequential" ? 0 : getPreemptiveQuotaRemainingPercent7d(pluginConfig)),
 		maxDeferralMs: getPreemptiveQuotaMaxDeferralMs(pluginConfig),
 	});
 	const contextBudgetGuard = new ContextBudgetGuard({
@@ -1212,6 +1214,8 @@ export async function startRuntimeRotationProxy(
 		activeAccountManager,
 		routingMutexMode,
 		schedulingStrategy,
+		sequentialCoordinator: schedulingStrategy === "sequential" ? new SequentialAccountCoordinator() : undefined,
+		sequentialQuotaThresholds: { fiveHours: options.quotaRemainingPercentThreshold ?? getPreemptiveQuotaRemainingPercent5h(pluginConfig), weekly: options.quotaRemainingPercentThreshold ?? getPreemptiveQuotaRemainingPercent7d(pluginConfig) },
 		fetchImpl,
 		upstreamBaseUrl,
 		clientApiKey,
@@ -1801,8 +1805,15 @@ async function handleRequestInner(
 			: null;
 		const workspaceCandidates = new Map<number, ReturnType<typeof workspaceModelScopes>>();
   const readSubscriptionQuota = state.readSubscriptionQuota;
-  const subscriptionQuotaCache = state.nativeOpenai && isResponsesRequest && readSubscriptionQuota ? await cachedRead(state, "subscription-quota", readSubscriptionQuota).catch(()=>null) ?? null : null;
+  const subscriptionQuotaCache = (state.nativeOpenai || state.schedulingStrategy === "sequential") && isResponsesRequest && readSubscriptionQuota ? await cachedRead(state, "subscription-quota", readSubscriptionQuota).catch(()=>null) ?? null : null;
   const subscriptionQuotaByAccount: Record<number, SubscriptionQuotaPreference> = {};
+		const weeklyResetByAccount: Record<number, WeeklyResetPreference> = {};
+		const sequentialQuotaFor = (account: ManagedAccount, workspaceId = quotaWorkspaceId(account)) => {
+			const cached = findQuotaCacheEntryForAccount(subscriptionQuotaCache, account, accountManager.getAccountsSnapshot(), undefined, workspaceId);
+			const key = workspaceId && quotaWorkspaceKey(account, workspaceId);
+			const observed = key ? state.sequentialQuotaObservations?.get(key) : undefined;
+			return observed && observed.updatedAt >= (cached?.updatedAt ?? 0) ? observed : cached;
+		};
   const resetCreditState=state.nativeOpenai&&isResponsesRequest ? await cachedRead(state, "reset-credits", loadResetCreditState).catch(()=>null):null;
   const quotaForScope = (account: ManagedAccount, scope: ReturnType<typeof workspaceModelScopes>[number]) => {
    // Scoped observations belong to this credential and workspace; legacy entries only describe the binding.
@@ -2071,6 +2082,14 @@ async function handleRequestInner(
 		const noteRotation = (): void => {
 			if (!isPinned) state.status.rotations += 1;
 		};
+		const noteSharedUnavailability = async (account: ManagedAccount, kind: "quota" | "failure" = "failure"): Promise<void> => {
+			if (!state.sequentialCoordinator || isPinned) return;
+			const until = Math.max(account.coolingDownUntil ?? 0, account.rateLimitResetTimes[context.family] ?? 0,
+				context.model ? account.rateLimitResetTimes[`${context.family}:${context.model}`] ?? 0 : 0);
+			if (until > state.now()) await state.sequentialCoordinator.recordUnavailable(account, until, kind).catch(() => {
+				proxyLog.warn("Shared account cooldown could not be saved", { traceId });
+			});
+		};
 		// Pool attempts are normally capped by account count because an unpinned
 		// account is selected at most once per request. A pin can only retry the
 		// same account, so use the configured transient-attempt limit instead of
@@ -2189,11 +2208,34 @@ async function handleRequestInner(
 			// non-reentrant FIFO queue. In legacy mode the inline `markSwitched`
 			// calls inside `chooseAccount` are used unchanged and no lock is taken,
 			// so default behavior and perf are identical to before.
-			const selectAccount = (): ManagedAccount | null => {
+			const selectAccount = (sharedBlockedIndexes: ReadonlySet<number> = new Set()): ManagedAccount | null => {
+				if (state.schedulingStrategy === "sequential" && isResponsesRequest) {
+					for (const account of accountManager.getAccountsSnapshot()) {
+						const scopes = workspaceCandidates.get(account.index);
+						const entries = scopes?.length ? scopes.map(scope => ({ entry: quotaForScope(account, scope), workspaceId: scope.accountId }))
+							: [{ entry: sequentialQuotaFor(account), workspaceId: quotaWorkspaceId(account) }];
+						const ranked = entries.map(item => ({ ...item, preference: weeklyResetPreference(item.entry, state.now(), state.sequentialQuotaThresholds ?? { fiveHours: 2, weekly: 2 }) }));
+						ranked.sort((a, b) => Number(a.preference.blocked) - Number(b.preference.blocked) || (a.preference.resetAtMs ?? Infinity) - (b.preference.resetAtMs ?? Infinity));
+						const best = ranked[0];
+						if (best) weeklyResetByAccount[account.index] = best.preference;
+						if (best && scopes) scopes.sort((a, b) => Number(b.accountId === best.workspaceId) - Number(a.accountId === best.workspaceId));
+						const quotaKey = buildQuotaScheduleKey(account, context.family, context.model);
+						const observedAt = state.preemptiveQuotaScheduler.getUpdatedAt(quotaKey);
+						if (best?.workspaceId === quotaWorkspaceId(account) && account.lastRateLimitReason === "quota" && observedAt !== null && quotaConfirmsRecovery(best?.entry, state.now(), observedAt, state.sequentialQuotaThresholds ?? { fiveHours: 2, weekly: 2 })) {
+							const live = accountManager.getAccountByIndex(account.index);
+							if (live) {
+								delete live.rateLimitResetTimes[context.family];
+								if (context.model) delete live.rateLimitResetTimes[`${context.family}:${context.model}`];
+								state.preemptiveQuotaScheduler.clear(quotaKey);
+								accountManager.saveToDiskDebounced();
+							}
+						}
+					}
+				}
     for(const [index,scopes] of workspaceCandidates){
      const account=accountManager.getAccountByIndex(index);
      if(!account)continue;
-     scopes.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
+     if (state.schedulingStrategy !== "sequential") scopes.sort((a,b)=>compareSubscriptionQuota(subscriptionQuotaPreference(quotaForScope(account,a),state.now()),subscriptionQuotaPreference(quotaForScope(account,b),state.now())));
      const scope=scopes[0];
      if(scope)subscriptionQuotaByAccount[index]=subscriptionQuotaPreference(quotaForScope(account,scope),state.now());
     }
@@ -2203,7 +2245,7 @@ async function handleRequestInner(
 					sessionKey: context.sessionKey,
 					family: context.family,
 					model: context.model,
-					attemptedIndexes: new Set([...attemptedIndexes, ...catalogExcludedIndexes()]),
+					attemptedIndexes: new Set([...attemptedIndexes, ...catalogExcludedIndexes(), ...sharedBlockedIndexes]),
 					now: state.now(),
 					policy: policyDecision,
 					pinnedIndex,
@@ -2214,6 +2256,7 @@ async function handleRequestInner(
 					stickyBoostByAccount: rotationStickyBoost,
 					pidOffsetEnabled: state.pidOffsetEnabled,
 					schedulingStrategy: state.schedulingStrategy,
+					weeklyResetByAccount: state.schedulingStrategy === "sequential" && isResponsesRequest ? weeklyResetByAccount : undefined,
 					// Only on a RETRY pass. The first pass still honors a cooldown
 					// another request left on the pin, so an already-cooling pinned
 					// account 503s immediately as before; from the second pass on,
@@ -2223,10 +2266,20 @@ async function handleRequestInner(
 				});
     return result;
    };
+			const selectSharedAccount = (): Promise<ManagedAccount | null> =>
+				state.sequentialCoordinator && pinnedIndex === null
+					? state.sequentialCoordinator.select({ manager: accountManager, family: context.family, affinityGeneration: storageMeta.affinityGeneration, select: selectAccount,
+						canRecover: (account, blockedAt) => quotaConfirmsRecovery(sequentialQuotaFor(account), state.now(), blockedAt, state.sequentialQuotaThresholds ?? { fiveHours: 2, weekly: 2 }),
+					})
+						.catch(() => {
+							proxyLog.warn("Shared sequential selection unavailable; using local selection", { traceId });
+							return selectAccount();
+						})
+					: Promise.resolve(selectAccount());
 			const selected =
 				state.routingMutexMode === "enabled"
 					? await withRoutingMutex(state.routingMutexMode, async () => {
-							const candidate = selectAccount();
+							const candidate = await selectSharedAccount();
 							if (
 								candidate &&
 								pinnedIndex === null &&
@@ -2249,7 +2302,7 @@ async function handleRequestInner(
 							}
 							return candidate;
 						})
-					: selectAccount();
+					: await selectSharedAccount();
             for (const index of catalogExcludedIndexes()) accountSkipReasons.set(index, "model-not-supported");
 			if (!selected) {
 				if (
@@ -2321,6 +2374,7 @@ async function handleRequestInner(
 				accountManager.recordRateLimit(selected, context.family, context.model);
 				accountManager.saveToDiskDebounced();
 				noteRotation();
+				await noteSharedUnavailability(selected, "quota");
 				continue;
 			}
 
@@ -2361,6 +2415,7 @@ async function handleRequestInner(
 			});
 			if (!refreshed.ok) {
 				refundConsumedPoolToken(selected);
+				await noteSharedUnavailability(selected);
 				// No accountSkipReasons write here: ensureFreshAccessToken always
 				// applies an auth cooldown before returning !ok, so the next
 				// selection pass overwrites whatever this set with
@@ -2603,6 +2658,7 @@ async function handleRequestInner(
 				transientExhaustionReason = "network-error";
 				state.status.retries += 1;
 				noteRotation();
+				await noteSharedUnavailability(refreshed.account);
 				continue;
 			} finally {
 				res.off("close", onClientClose);
@@ -2614,6 +2670,14 @@ async function handleRequestInner(
 				// 5h window into a fresh weekly-only snapshot invents a current blocker
 				// and can bench an account after the service stops reporting that limit.
 				state.preemptiveQuotaScheduler.update(quotaScheduleKey, snapshot);
+				if (state.schedulingStrategy === "sequential" && isResponsesRequest) {
+					const key = quotaWorkspaceKey(refreshed.account, accountId);
+					if (key) {
+						const observations = state.sequentialQuotaObservations ??= new Map();
+						if (observations.size >= 1000 && !observations.has(key)) observations.delete(observations.keys().next().value ?? "");
+						observations.set(key, { ...snapshot, model: context.model ?? "unknown", planType });
+					}
+				}
 				if (state.nativeOpenai && requestScope && isResponsesRequest) {
 					const observations = state.subscriptionQuotaObservations ??= new Map();
 					const key = JSON.stringify([requestScope.id, context.model]);
@@ -2702,6 +2766,7 @@ async function handleRequestInner(
 				transientExhaustionReason = "rate-limit";
 				state.status.retries += 1;
 				noteRotation();
+				await noteSharedUnavailability(refreshed.account, "quota");
 				continue;
 			}
 
@@ -2911,6 +2976,7 @@ async function handleRequestInner(
 				transientExhaustionReason = "server-error";
 				state.status.retries += 1;
 				noteRotation();
+				await noteSharedUnavailability(refreshed.account);
 				continue;
 			}
 
@@ -2954,7 +3020,7 @@ async function handleRequestInner(
 			const nearExhaustionWaitMs = quotaDeferral.defer
 				? quotaDeferral.waitMs
 				: 0;
-			if (nearExhaustionWaitMs > 0) {
+			if (nearExhaustionWaitMs > 0 && state.schedulingStrategy !== "sequential") {
 				accountManager.markRateLimitedWithReason(
 					refreshed.account,
 					nearExhaustionWaitMs,
@@ -3035,6 +3101,23 @@ async function handleRequestInner(
 			// The client went away mid-stream: no upstream error, and the response was
 			// neither completed nor failed. That says nothing about the account.
 			const clientDisconnected = !forwarded && !streamErrored && !res.writableEnded;
+			if (state.schedulingStrategy === "sequential" && !clientDisconnected) {
+				// Streaming quota frames can replace a header's exhausted 5h window
+				// with weekly-only limits. Persist only the final observed blocker.
+				const latestQuota = state.preemptiveQuotaScheduler.getDeferral(quotaScheduleKey, state.now());
+				if (latestQuota.defer && latestQuota.waitMs > 0) {
+					accountManager.markRateLimitedWithReason(refreshed.account, latestQuota.waitMs, context.family, "quota", context.model);
+					state.sessionAffinityStore?.forgetSession(context.sessionKey);
+					accountManager.saveToDiskDebounced();
+					await noteSharedUnavailability(refreshed.account, "quota");
+				}
+				const key = quotaWorkspaceKey(refreshed.account, accountId);
+				const observed = key ? state.sequentialQuotaObservations?.get(key) : undefined;
+				if (key && observed) {
+					await saveQuotaCache({ byAccountId: {}, byEmail: {}, byWorkspace: { [key]: observed } });
+					state.readCache?.delete("subscription-quota");
+				}
+			}
 			if (forwarded && upstream.ok) {
 				accountManager.recordSuccess(refreshed.account, context.family, context.model);
 				recordRuntimeAccountRecovery(refreshed.account.index);

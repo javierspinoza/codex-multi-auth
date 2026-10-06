@@ -3,6 +3,7 @@ import type { AccountManager, ManagedAccount } from "../accounts.js";
 import type { ModelFamily } from "../prompts/codex.js";
 import type { RuntimePolicyDecision } from "../policy/runtime-policy.js";
 import type { SessionAffinityStore } from "../session-affinity.js";
+import { selectWeeklyResetIndex, type WeeklyResetPreference } from "./weekly-reset-order.js";
 
 /**
  * Whether a runtime skip reason is a cooldown, the one blocker a pinned
@@ -46,6 +47,7 @@ export function chooseAccount(params: {
 	/** Soft pin: first eligible attempt across tiers, then normal fallback. Ignored whenever `pinnedIndex` is set, which is how the proxy applies a stored `switch` pin. */
 	fallbackPinnedIndex?: number | null;
 	subscriptionQuotaByAccount?: Record<number, SubscriptionQuotaPreference>;
+	weeklyResetByAccount?: Record<number, WeeklyResetPreference>;
 	skipReasons?: Map<number, string>;
 	stickyBoostByAccount?: Record<number, number>;
 	pidOffsetEnabled?: boolean;
@@ -80,7 +82,7 @@ export function chooseAccount(params: {
 		sessionKey,
 		family,
 		model,
-		attemptedIndexes,
+		attemptedIndexes: requestedAttempts,
 		now,
 		policy,
 		pinnedIndex,
@@ -90,6 +92,10 @@ export function chooseAccount(params: {
 		schedulingStrategy,
 		allowPinnedCooldown,
 	} = params;
+	const weeklyBlocked = params.weeklyResetByAccount && schedulingStrategy === "sequential" && pinnedIndex === null
+		? Object.entries(params.weeklyResetByAccount).filter(([, preference]) => preference.blocked).map(([index]) => Number(index)) : [];
+	const attemptedIndexes = weeklyBlocked.length ? new Set([...requestedAttempts, ...weeklyBlocked]) : requestedAttempts;
+	for (const index of weeklyBlocked) skipReasons?.set(index, "quota-near-exhaustion");
 
  const fallbackPin = params.fallbackPinnedIndex;
  const quotaByAccount = params.subscriptionQuotaByAccount;
@@ -115,12 +121,12 @@ export function chooseAccount(params: {
    const usable = candidates.filter(a => !quotaByAccount[a.index]?.exhausted);
    if (!usable.length) return null;
    const nonReserve = usable.filter(a => !usesSubscriptionReserve(quotaByAccount[a.index]));
-   candidates = nonReserve.length ? nonReserve : usable;
+   candidates = params.schedulingStrategy === "sequential" ? usable : nonReserve.length ? nonReserve : usable;
   }
 		const tier = Math.min(...candidates.map(a => priorities[a.index] ?? 1));
 		const tierIndexes = new Set(candidates.filter(a => (priorities[a.index] ?? 1) === tier).map(a => a.index));
-		let preferred = params.preferredIndex;
-  if (quotaByAccount) {
+		let preferred = params.schedulingStrategy === "sequential" ? null : params.preferredIndex;
+  if (quotaByAccount && params.schedulingStrategy !== "sequential") {
    // Rank only measured accounts: "no data" compares equal to everything, which
    // is not transitive and would make the winner depend on storage order.
    const ranked = candidates.flatMap(a=>{
@@ -191,10 +197,19 @@ export function chooseAccount(params: {
 	// exhausted the selector advances to the next available account and earlier
 	// accounts reclaim the slot once their quota recovers.
 	if (schedulingStrategy === "sequential") {
+		const weeklyOrder = params.weeklyResetByAccount;
+		if (weeklyOrder) {
+			const candidates = accountManager.getAccountsSnapshot().filter(account =>
+				!attemptedIndexes.has(account.index) && !policy?.blockedAccountIndexes.has(account.index) &&
+				!accountManager.getAccountRuntimeSkipReason(account.index, family, model),
+			).map(account => ({ index: account.index, preference: weeklyOrder[account.index] ?? { resetAtMs: null, resetDay: null, blocked: false } }));
+			const index = selectWeeklyResetIndex(candidates, accountManager.getCurrentAccountForFamily(family)?.index ?? null);
+			if (index !== null) accountManager.adoptActiveAccountForFamily(index, family);
+		}
 		const selected = accountManager.getCurrentOrNextForFamilySequential(
 			family,
 			model,
-			policy?.blockedAccountIndexes,
+			weeklyBlocked.length ? new Set([...(policy?.blockedAccountIndexes ?? []), ...weeklyBlocked]) : policy?.blockedAccountIndexes,
 		);
 		if (
 			selected &&

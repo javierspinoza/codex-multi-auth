@@ -127,6 +127,17 @@ describe("compact account list", () => {
 		expect(output(d)).not.toContain("rotación sin cuenta fijada");
 	});
 
+	it("shows the shared sequential primary without presenting the saved pointer as another selection", async () => {
+		const key = inferenceAccountKey(storage().accounts[1]!);
+		const d = deps({}, { getSchedulingStrategy: () => "sequential", loadSequentialPrimaryAccountKey: async () => key });
+		await runListCommand([], d);
+		expect(output(d)).toContain("Rotación: activa\nEstrategia: secuencial · cuenta compartida: cuenta2");
+		expect(output(d)).not.toContain("cuenta seleccionada:");
+		expect(output(d)).toContain("Estrategia: secuencial · cuenta compartida: cuenta2");
+		expect(output(d)).toContain("Los proyectos que comparten el pool siguen la cuenta compartida");
+		expect(output(d)).not.toContain("Los chats pueden usar cuentas distintas");
+	});
+
 	it("distinguishes stored selection from inference across proxies and preserves quota sorting", async () => {
 		const s = storage();
 		const keys = s.accounts.map(inferenceAccountKey);

@@ -2,6 +2,25 @@ import { expect, it } from "vitest";
 import { mergeAccountSnapshot } from "../lib/storage/snapshot-merge.js";
 import type { AccountStorageV3 } from "../lib/storage/public-types.js";
 const fixture = (): AccountStorageV3 => ({ version: 3, activeIndex: 0, accounts: [{ recordId: "a", accountId: "a", refreshToken: "fixture-a", addedAt: 1, lastUsed: 1, workspaces: [{ id: "personal", enabled: true }, { id: "business", enabled: true }], currentWorkspaceIndex: 0 }] });
+it("inserts a replacement in the same position while preserving concurrent additions and selections", () => {
+    const base = fixture();
+    base.accounts.push({ recordId: "b", accountId: "b", refreshToken: "fixture-b", addedAt: 2, lastUsed: 2 });
+    base.activeIndex = 0;
+    base.pinnedAccountIndex = 0;
+    const disk = structuredClone(base), local = structuredClone(base);
+    disk.accounts.push({ recordId: "c", accountId: "c", refreshToken: "fixture-c", addedAt: 3, lastUsed: 3 });
+    local.accounts[0] = { recordId: "replacement", accountId: "replacement", refreshToken: "fixture-new", addedAt: 4, lastUsed: 4 };
+    const merged = mergeAccountSnapshot(base, disk, local);
+    expect(merged.accounts.map(row => row.recordId)).toEqual(["replacement", "b", "c"]);
+    expect(merged.activeIndex).toBe(0);
+    expect(merged.pinnedAccountIndex).toBe(0);
+});
+it("preserves disk append order when another process also appends locally", () => {
+    const base = fixture(), disk = structuredClone(base), local = structuredClone(base);
+    disk.accounts.push({ recordId: "disk", accountId: "disk", refreshToken: "fixture-disk", addedAt: 2, lastUsed: 2 });
+    local.accounts.push({ recordId: "local", accountId: "local", refreshToken: "fixture-local", addedAt: 3, lastUsed: 3 });
+    expect(mergeAccountSnapshot(base, disk, local).accounts.map(row => row.recordId)).toEqual(["a", "disk", "local"]);
+});
 it("preserves independently added accounts and workspace edits during an old runtime save", () => {
     const base = fixture(), disk = structuredClone(base), local = structuredClone(base);
     disk.accounts.push({ recordId: "b", accountId: "b", refreshToken: "fixture-b", addedAt: 2, lastUsed: 2 });

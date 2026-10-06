@@ -890,6 +890,13 @@ export class AccountManager {
 		this.saveToDiskDebounced();
 	}
 
+	/** Adopt a shared routing pointer without touching usage, credentials or CLI login. */
+	adoptActiveAccountForFamily(index: number, family: ModelFamily): void {
+		if (!Number.isInteger(index) || index < 0 || index >= this.accounts.length) return;
+		this.currentAccountIndexByFamily[family] = index;
+		this.cursorByFamily[family] = (index + 1) % this.accounts.length;
+	}
+
 	setActiveIndex(index: number): ManagedAccount | null {
 		if (!Number.isFinite(index)) return null;
 		if (index < 0 || index >= this.accounts.length) return null;

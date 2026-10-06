@@ -117,6 +117,20 @@ To re-authenticate one account without disturbing the rest:
 codex-multi-auth login --account <index|email|id>
 ```
 
+To replace a saved account with a different ChatGPT user while keeping its number:
+
+```bash
+codex-multi-auth login --replace-account 9
+```
+
+Sign in with the new user. The account stays in position 9 and other account numbers
+stay unchanged. Cancellation or a failed login leaves the old credentials in place.
+The replacement keeps the slot's enabled/disabled state and selected positions,
+including a manual pin, and starts with fresh workspace and quota/cooldown metadata.
+Policies and usage history belong to each user's identity and are not transferred.
+An account already saved in another position is refused. For a remote shell, add
+`--device-auth`.
+
 ---
 
 ## Run Codex With Rotation

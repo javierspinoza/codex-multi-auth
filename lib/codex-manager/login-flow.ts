@@ -403,12 +403,13 @@ async function runAuthLoginFlow(
 
 		const refreshedStorage = await loadAccounts();
 		let existingCount = refreshedStorage?.accounts.length ?? 0;
-		const expectedAccount = loginOptions.account
+		const targetIdentifier = loginOptions.account ?? loginOptions.replaceAccount;
+		const expectedAccount = targetIdentifier
 			? refreshedStorage
-				? resolveLoginAccountTarget(refreshedStorage, loginOptions.account)
+				? resolveLoginAccountTarget(refreshedStorage, targetIdentifier)
 				: null
 			: undefined;
-		if (loginOptions.account && !expectedAccount) {
+		if (targetIdentifier && !expectedAccount) {
 			console.error(
 				"The requested Codex account is missing or ambiguous. No login was started.",
 			);
@@ -421,6 +422,9 @@ async function runAuthLoginFlow(
 			expectedAccount && refreshedStorage
 				? refreshedStorage.accounts.indexOf(expectedAccount)
 				: -1;
+		if (loginOptions.replaceAccount) {
+			console.log(`Replacing account ${expectedAccountIndex + 1}. Sign in with the new ChatGPT account. The saved account changes only after login succeeds.`);
+		}
 		// A non-empty pool already forces a fresh sign-in, and a resolved target
 		// implies the pool was non-empty, so it adds no condition of its own.
 		let forceNewLogin = existingCount > 0;
@@ -465,6 +469,10 @@ async function runAuthLoginFlow(
 							onboardingBackupDiscoveryWarning,
 						);
 			if (signInMode === "cancel") {
+				if (explicitSignInMode) {
+					console.log("Cancelled.");
+					return 0;
+				}
 				if (existingCount > 0) {
 					console.log(
 						stylePromptText(UI_COPY.oauth.cancelledBackToMenu, "muted"),
@@ -602,7 +610,8 @@ async function runAuthLoginFlow(
 			let resolved: ReturnType<typeof resolveAccountSelection>;
 			let persistResult: Awaited<ReturnType<typeof persistAccountPool>>;
 			try {
-				const workspaceOverride = expectedAccount || resolveOrgOverride(loginOptions.org)
+				const reauthAccount = loginOptions.replaceAccount ? undefined : expectedAccount;
+				const workspaceOverride = reauthAccount || resolveOrgOverride(loginOptions.org)
 					? loginOptions.org
 					: await chooseLoginWorkspace(getAccountIdCandidates(tokenResult.access, tokenResult.idToken));
 				if (workspaceOverride === null) {
@@ -615,7 +624,7 @@ async function runAuthLoginFlow(
 					console.log("Cancelled. Account was not saved.");
 					return 0;
 				}
-				resolved = resolveAccountSelection(tokenResult, workspaceOverride, expectedAccount?.accountId);
+				resolved = resolveAccountSelection(tokenResult, workspaceOverride, reauthAccount?.accountId);
 				// The workspace list comes from token claims, which can name an
 				// organization these credentials hold no live authorization for. Codex
 				// CLI >= 0.156.0 checks that against wham/accounts/check and refuses
@@ -623,7 +632,7 @@ async function runAuthLoginFlow(
 				// discovery", so ask the same question before persisting the id.
 				// A targeted re-auth is skipped: persistAccountPool identity-checks it
 				// and would reject a rewritten id.
-				if (!expectedAccount && resolved.accountIdOverride) {
+				if (!reauthAccount && resolved.accountIdOverride) {
 					const authorized = await fetchAuthorizedAccounts(tokenResult.access);
 					const constrained = applyAuthorizedAccountConstraint(
 						resolved,
@@ -663,10 +672,12 @@ async function runAuthLoginFlow(
 					expectedAccount: expectedAccount ?? undefined,
 					expectedAccountIndex:
 						expectedAccountIndex >= 0 ? expectedAccountIndex : undefined,
+					...(loginOptions.replaceAccount ? { replaceAccount: true } : {}),
 				});
 			} catch (error) {
 				if (error instanceof CodexValidationError) {
-					console.error(`${expectedAccount ? "Re-authentication" : "Login"} failed: ${error.message}`);
+					const action = loginOptions.replaceAccount ? "Replacement" : expectedAccount ? "Re-authentication" : "Login";
+					console.error(`${action} failed: ${error.message}`);
 					return 1;
 				}
 				throw error;
@@ -690,11 +701,13 @@ async function runAuthLoginFlow(
 			// same-email login that maps onto an existing entry updates or
 			// rebinds it instead of growing the pool (issue #512).
 			const outcomeMessage =
-				persistResult?.outcome === "rebound"
-					? `Rebound workspace for existing account. Total: ${count}`
-					: persistResult?.outcome === "updated"
-						? `Updated existing account. Total: ${count}`
-						: `Added account. Total: ${count}`;
+				persistResult?.outcome === "replaced"
+					? `Replaced account ${persistResult.accountIndex + 1}. Account numbers preserved. Total: ${count}`
+					: persistResult?.outcome === "rebound"
+						? `Rebound workspace for existing account. Total: ${count}`
+						: persistResult?.outcome === "updated"
+							? `Updated existing account. Total: ${count}`
+							: `Added account. Total: ${count}`;
 			console.log(outcomeMessage);
 			if (persistResult && !persistResult.accountEnabled) {
 				console.log(

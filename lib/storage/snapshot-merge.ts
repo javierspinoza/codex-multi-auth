@@ -154,9 +154,25 @@ export function mergeAccountSnapshot(base: AccountStorageV3 | null, current: Acc
         const merged = mergeRuntimeAccount(prior, { ...row, lastUsed }, { ...next, lastUsed });
         accounts.push(merged);
     }
-    for (const [key, row] of proposed)
-        if (!old.has(key) && !disk.has(key))
-            accounts.push(structuredClone(row));
+    // Anchor local insertions before their next surviving neighbor. A replacement
+    // has a new record identity but must occupy the removed record's position.
+    // Existing disk order and independently appended accounts remain intact.
+    const surviving = new Set(accounts.map(identity));
+    const additionsBefore = new Map<string, AccountMetadataV3[]>();
+    let pendingAdditions: AccountMetadataV3[] = [];
+    for (const [key, row] of proposed) {
+        if (!old.has(key) && !disk.has(key)) {
+            pendingAdditions.push(structuredClone(row));
+        } else if (surviving.has(key) && pendingAdditions.length) {
+            additionsBefore.set(key, pendingAdditions);
+            pendingAdditions = [];
+        }
+    }
+    const orderedAccounts = accounts.flatMap(row => {
+        const key = identity(row);
+        return [...(key ? additionsBefore.get(key) ?? [] : []), row];
+    });
+    accounts.splice(0, accounts.length, ...orderedAccounts, ...pendingAdditions);
     const pointer = (storage: AccountStorageV3, value: number | undefined) => { const row = value === undefined ? undefined : storage.accounts[value]; return row ? identity(row) : undefined; };
     const position = (id: string | undefined) => id === undefined ? undefined : accounts.findIndex(row => identity(row) === id);
     const pick = (before: number | undefined, onDisk: number | undefined, next: number | undefined) => {

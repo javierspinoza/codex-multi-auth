@@ -10,6 +10,7 @@ What `codex-multi-auth` gives you, grouped by job. Everything listed is a `codex
 | --- | --- |
 | Add accounts by browser OAuth (PKCE), device code, or manual callback | `codex-multi-auth login [--device-auth \| --manual]` |
 | Re-authenticate one account in place | `codex-multi-auth login --account <index\|email\|id>` |
+| Replace one account with another user in the same position | `codex-multi-auth login --replace-account <index\|email\|id>` |
 | Bind a login to a specific org/workspace | `codex-multi-auth login --org <id>` |
 | List the pool, quota windows, and runtime markers | `codex-multi-auth list`, `status`, `limits --json` |
 | Pin the active account | `codex-multi-auth switch <index>` (`unpin` clears it) |

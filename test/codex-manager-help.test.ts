@@ -7,6 +7,41 @@ import {
 import { DEFAULT_PROBE_MODEL } from "../lib/request/helpers/model-map.js";
 
 describe("codex-manager help parsers", () => {
+	it.each([
+		["--replace-account", "9"],
+		["--replace-account=old@example.com"],
+	])("parses replacement with selection preserved: %j", (...args) => {
+		expect(parseAuthLoginArgs(args)).toMatchObject({
+			ok: true,
+			options: { replaceAccount: args.length === 2 ? "9" : "old@example.com", preserveSelection: true },
+		});
+	});
+
+	it.each([
+		["--replace-account"],
+		["--replace-account="],
+		["--replace-account", "--device-auth"],
+	])("rejects a missing replacement target: %j", (...args) => {
+		expect(parseAuthLoginArgs(args)).toMatchObject({
+			ok: false,
+			message: expect.stringContaining("Missing value for --replace-account"),
+		});
+	});
+
+	it("rejects replacement combined with re-authentication", () => {
+		expect(parseAuthLoginArgs(["--account", "9", "--replace-account", "9"])).toMatchObject({
+			ok: false,
+			message: expect.stringContaining("Cannot combine --account with --replace-account"),
+		});
+	});
+
+	it("allows replacement with a chosen workspace and device authentication", () => {
+		expect(parseAuthLoginArgs(["--replace-account", "9", "--org", "org_new", "--device-auth"])).toMatchObject({
+			ok: true,
+			options: { replaceAccount: "9", org: "org_new", deviceAuth: true, preserveSelection: true },
+		});
+	});
+
 	it("parses selection-preserving and targeted re-auth options", () => {
 		expect(
 			parseAuthLoginArgs([

@@ -9,6 +9,7 @@ export function printUsage(): void {
 			"",
 			"Start here:",
 			"  codex-multi-auth login [--device-auth|--manual|--no-browser] [--org <org_id>] [--preserve-selection] [--account <index|email|account_id>]",
+			"  codex-multi-auth login --replace-account <index|email|account_id>   (replace a saved account in place)",
 			"  codex-multi-auth login --api      (API credentials and visible models)",
 			"  codex-multi-auth list [--json|--verbose|--hola]   (live quota; --hola greets every account with GPT-6 Luna)",
 			"  codex-multi-auth status [--json]   (detailed diagnostics)",
@@ -68,6 +69,7 @@ export type AuthLoginOptions = {
 	preserveSelection?: boolean;
 	org?: string;
 	account?: string;
+	replaceAccount?: string;
 };
 
 export type ParsedAuthLoginArgs =
@@ -99,26 +101,29 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 			options.preserveSelection = true;
 			continue;
 		}
-		if (arg === "--account" || arg?.startsWith("--account=")) {
+		if (
+			arg === "--account" || arg?.startsWith("--account=") ||
+			arg === "--replace-account" || arg?.startsWith("--replace-account=")
+		) {
+			const flag = arg.startsWith("--replace-account") ? "--replace-account" : "--account";
 			let value: string | undefined;
-			if (arg === "--account") {
+			if (arg === flag) {
 				value = args[i + 1];
 				i += 1;
 			} else {
-				value = arg.slice("--account=".length);
+				value = arg.slice(flag.length + 1);
 			}
 			const trimmed = value?.trim();
 			if (!trimmed || trimmed.startsWith("--")) {
 				return {
 					ok: false,
 					reason: "error",
-					message:
-						"Missing value for --account. Usage: codex-multi-auth login --account <index|email|account_id>",
+					message: `Missing value for ${flag}. Usage: codex-multi-auth login ${flag} <index|email|account_id>`,
 				};
 			}
-			options.account = trimmed;
-			// A targeted re-auth must never select the refreshed account as a
-			// side effect, even if the caller omits the redundant safety flag.
+			if (flag === "--replace-account") options.replaceAccount = trimmed;
+			else options.account = trimmed;
+			// Updating one slot must not change the other selected positions.
 			options.preserveSelection = true;
 			continue;
 		}
@@ -174,6 +179,13 @@ export function parseAuthLoginArgs(args: string[]): ParsedAuthLoginArgs {
 			reason: "error",
 			message:
 				"Cannot combine --account with --org. Re-authenticate the saved account on its own workspace, or register the other workspace with --org on its own.",
+		};
+	}
+	if (options.account && options.replaceAccount) {
+		return {
+			ok: false,
+			reason: "error",
+			message: "Cannot combine --account with --replace-account. Choose re-authentication or replacement.",
 		};
 	}
 

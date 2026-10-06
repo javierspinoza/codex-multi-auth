@@ -48,6 +48,7 @@ per-project pools are a runtime-proxy routing concern, not a CLI one.
 | --- | --- |
 | `codex-multi-auth login` | OAuth login; opens the interactive auth dashboard on a TTY when the pool is populated. Flags: `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`, `--preserve-selection`, `--account <index\|email\|account_id>` |
 | `codex-multi-auth login --api` | Manage API/ZDR credentials, priority, and visible models in an interactive terminal (TTY only; use alone) |
+| `codex-multi-auth login --replace-account <index\|email\|account_id>` | Sign in with a different ChatGPT account and replace the saved target in its current position; other account numbers and selected positions stay unchanged |
 | `codex-multi-auth status` | Detailed account pool, pin, runtime metrics, storage summary, and cached model discovery (`--json`). `list` probes quota on every call and shows a compact quota table; accepts `--verbose` and the same `--json` contract |
 | `codex-multi-auth switch <index>` | Set the active account by 1-based index and pin it for runtime routing |
 | `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
@@ -118,6 +119,7 @@ All governance state is file-backed under `~/.codex/multi-auth`.
 | `--org <org_id>` | login | Bind this login to a specific ChatGPT workspace/org id (the same seat can be registered as personal vs team/business) |
 | `--preserve-selection` | login | Add or refresh credentials without changing active selections or the manual pin; performs one sign-in and exits |
 | `--account <index\|email\|account_id>` | login | Re-authenticate exactly one saved account. Implies `--preserve-selection`, refuses a different OAuth identity before writing, keeps a disabled account disabled, and cannot be combined with `--org` |
+| `--replace-account <index\|email\|account_id>` | login | Replace one saved account in place after successful OAuth login. Implies `--preserve-selection`; preserves the target's enabled/disabled state, selected positions, and manual pin. Resets the target's credential, workspace, and quota/cooldown metadata and invalidates session affinity. Refuses an account already saved elsewhere or a target moved/replaced during login. Cannot be combined with `--account`; supports `--device-auth`, `--manual`, and `--org` |
 | `--api` | login | Open API credential and model visibility setup; use alone |
 | `--json` | limits, verify-flagged, verify, why-selected, best, forecast, report, usage, budget, models, monitor, integrations, fix, doctor, config explain, debug bundle, history | Print machine-readable output |
 | `--csv` | usage | Print or write CSV bucket output |
@@ -211,7 +213,8 @@ availability, and the last inference dispatch time (`ÚLTIMA SOLICITUD`, local
 `DD/MM HH:mm:ss`). Accounts appear in descending order of remaining five-hour quota;
 weekly quota breaks ties, and unknown values follow known values. Original account
 numbers still match `switch`; display sorting does not change routing or selection.
-The footer shows whether runtime rotation is enabled and the stored selected account,
+The footer shows whether runtime rotation is enabled and, when sequential rotation
+is active, the shared primary. Other modes show the stored selected account,
 including any manual pin that suspends automatic switching. This reflects the
 effective configuration, including the environment override, rather than proving
 that a running Codex session has loaded it.
@@ -228,8 +231,33 @@ to appear. Quota/model probes and selection changes do not count as inference.
 `—` means no inference dispatch is recorded; requests bypassing the proxy cannot
 be observed. The timestamps record dispatch attempts, including failed attempts,
 and do not confirm an in-flight request or associate accounts with individual chats.
-With `hybrid`, separate chats can use different accounts; `sequential` follows the
-active account until rotation changes it. JSON retains each account's existing
+With `hybrid`, separate chats can use different accounts; `sequential` shares one
+active account across proxy processes using the same account pool. It advances
+by the earliest local weekly reset day, skipping unavailable accounts. Within the
+same day it keeps draining the active account; when changing accounts it picks
+the earliest weekly reset time in that day. Each request re-evaluates recorded
+availability and expired blockers, so an earlier recovered day takes priority
+over the current later day. Five-hour resets affect availability but never
+substitute for the weekly ordering. A weekly window is identified by its reported
+duration, in either slot. Unknown weekly dates use pool order as a fallback.
+Temporary upstream failures are shared across proxies until their wait expires;
+only a newer measured quota recovery can retire a quota blocker early, preserving
+network/server cooldowns. Response quota snapshots are saved by workspace for
+other proxies, and the scheduler reads the available cache rather than probing all
+accounts on every message. Selection
+is published before upstream dispatch under a cross-process lock, so an old
+request completing late cannot undo another project's rotation. The owner-only
+`<accounts-path>.sequential-routing.json` sidecar contains a hashed account
+identity, selection metadata and temporary blockers. `list` shows the shared primary as the routing
+selection; the saved pointer remains available in `status`, `list --verbose`
+and JSON. If the sidecar is unavailable, requests fall back to
+the local sequential selector.
+
+The sequential proxy uses `preemptiveQuotaRemainingPercent5h` and
+`preemptiveQuotaRemainingPercent7d` for its preventive thresholds; setting both
+to `2` rotates at two percent remaining in either reported window. A fresh
+weekly-only observation replaces the previous five-hour observation. Restart
+Codex sessions after changing strategy or thresholds. JSON retains each account's existing
 `lastInferenceRequestAt` field (Unix milliseconds or `null`).
 
 The entire account row is colored according to weekly remaining quota: green at

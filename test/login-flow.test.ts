@@ -124,7 +124,7 @@ function deps() {
 	};
 }
 
-type PersistOutcome = "inserted" | "updated" | "rebound";
+type PersistOutcome = "inserted" | "updated" | "rebound" | "replaced";
 
 // persistAccountPool reports which row it wrote and whether that row owns the
 // native ~/.codex/auth.json selection; the flow gates its sync on that.
@@ -238,6 +238,53 @@ describe("runAuthLogin argument handling", () => {
 });
 
 describe("runAuthLogin explicit transports", () => {
+	it.each([false, true])("replaces one account without binding the new login to the old identity (active: %s)", async (active) => {
+		accountsOnDisk = storageWith(16);
+		if (active) accountsOnDisk.activeIndexByFamily = { codex: 8 };
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockResolvedValue(persistResult({
+			outcome: "replaced", accountIndex: 8, isActiveAccount: active,
+		}));
+		expect(await runAuthLogin(["--replace-account", "9", "--device-auth"], deps())).toBe(0);
+		expect(promptLoginModeMock).not.toHaveBeenCalled();
+		expect(runSignInFlowMock).toHaveBeenCalledExactlyOnceWith(true, "device");
+		expect(resolveAccountSelectionMock).toHaveBeenCalledExactlyOnceWith(TOKEN_SUCCESS, undefined, undefined);
+		expect(fetchAuthorizedAccountsMock).toHaveBeenCalledOnce();
+		expect(persistAccountPoolMock).toHaveBeenCalledExactlyOnceWith([RESOLVED], false, {
+			preserveSelection: true,
+			expectedAccount: expect.objectContaining({ accountId: "acc_a8" }),
+			expectedAccountIndex: 8,
+			replaceAccount: true,
+		});
+		expect(syncSelectionToCodexMock).toHaveBeenCalledTimes(active ? 1 : 0);
+		expect(loggedLines(logSpy).join("\n")).toContain("Replaced account 9. Account numbers preserved. Total: 16");
+		expect(promptAddAnotherAccountMock).not.toHaveBeenCalled();
+	});
+
+	it("rejects an unknown replacement target before starting login", async () => {
+		accountsOnDisk = storageWith(2);
+		expect(await runAuthLogin(["--replace-account", "9"], deps())).toBe(1);
+		expect(runSignInFlowMock).not.toHaveBeenCalled();
+		expect(persistAccountPoolMock).not.toHaveBeenCalled();
+	});
+
+	it("leaves the pool untouched when replacement login is cancelled", async () => {
+		accountsOnDisk = storageWith(16);
+		expect(await runAuthLogin(["--replace-account", "9", "--device-auth"], deps())).toBe(0);
+		expect(persistAccountPoolMock).not.toHaveBeenCalled();
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+		expect(accountsOnDisk.accounts[8]?.accountId).toBe("acc_a8");
+	});
+
+	it("reports replacement validation errors without syncing credentials", async () => {
+		accountsOnDisk = storageWith(16);
+		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);
+		persistAccountPoolMock.mockRejectedValue(new CodexValidationError("already saved in another position"));
+		expect(await runAuthLogin(["--replace-account", "9", "--device-auth"], deps())).toBe(1);
+		expect(loggedLines(errorSpy).join("\n")).toContain("Replacement failed:");
+		expect(syncSelectionToCodexMock).not.toHaveBeenCalled();
+	});
+
 	it("targeted re-auth of a non-active row preserves selection and skips the Codex sync", async () => {
 		accountsOnDisk = storageWith(2);
 		runSignInFlowMock.mockResolvedValue(TOKEN_SUCCESS);

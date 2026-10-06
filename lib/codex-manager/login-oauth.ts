@@ -28,10 +28,13 @@ import { createLogger } from "../logger.js";
 import { MODEL_FAMILIES, type ModelFamily } from "../prompts/codex.js";
 import {
 	type AccountMetadataV3,
+	bumpStorageAffinityGeneration,
+	cloneTrackedAccountStorage,
 	findMatchingAccountIndex,
 	withAccountStorageTransaction,
 } from "../storage.js";
 import { cloneAccountStorageForPersistence } from "../storage/account-persistence.js";
+import { deriveAccountRecordId } from "../storage/record-identity.js";
 import { CodexValidationError } from "../errors.js";
 import type { CodexCliMirror } from "../storage/public-types.js";
 import type { AccountIdSource, TokenResult } from "../types.js";
@@ -39,6 +42,7 @@ import { UI_COPY } from "../ui/ui-copy.js";
 import {
 	type AccountPoolWriteOutcome,
 	applyAccountPoolResults,
+	buildInsertedAccount,
 	type ResolvedAccountWrite,
 } from "./account-pool-write.js";
 import { stylePromptText } from "./formatters/index.js";
@@ -461,11 +465,11 @@ export async function runSignInFlow(
 }
 
 /** @internal */
-export type PersistAccountPoolOutcome = AccountPoolWriteOutcome;
+export type PersistAccountPoolOutcome = AccountPoolWriteOutcome | "replaced";
 
 /** @internal */
 export interface PersistAccountPoolResult {
-	/** How the pool absorbed this login (appended, refreshed, or rebound). */
+	/** How the pool absorbed this login (appended, refreshed, rebound, or replaced). */
 	outcome: PersistAccountPoolOutcome;
 	/** Index of the row the login actually wrote. */
 	accountIndex: number;
@@ -489,9 +493,9 @@ export type ExpectedLoginAccount = Pick<
 
 /** @internal */
 export interface PersistAccountPoolOptions {
-	/** Keep every global/model-family selection on its pre-login identity. */
+	/** Keep global/model-family selections in their current slots. */
 	preserveSelection?: boolean;
-	/** Refuse the write unless the OAuth result is this saved account. */
+	/** Target one saved account; require matching OAuth identity unless replacing it. */
 	expectedAccount?: ExpectedLoginAccount;
 	/**
 	 * Position {@link expectedAccount} occupied when the caller resolved it.
@@ -502,6 +506,8 @@ export interface PersistAccountPoolOptions {
 	 * identity, which identity matching alone cannot tell apart.
 	 */
 	expectedAccountIndex?: number;
+	/** Explicitly replace the target's identity and credentials in its current slot. */
+	replaceAccount?: boolean;
 }
 
 function sameExpectedLoginIdentity(
@@ -612,6 +618,9 @@ export async function persistAccountPool(
 	options: PersistAccountPoolOptions = {},
 ): Promise<PersistAccountPoolResult | null> {
 	if (results.length === 0) return null;
+	if (options.replaceAccount && (!options.expectedAccount || replaceAll)) {
+		throw new CodexValidationError("Replacement requires one saved target account and cannot replace the entire pool.");
+	}
 
 	return await withAccountStorageTransaction(async (loadedStorage, persist) => {
 		const stored = replaceAll ? null : loadedStorage;
@@ -650,7 +659,7 @@ export async function persistAccountPool(
 
 		if (options.expectedAccount && writes.length !== 1) {
 			throw new CodexValidationError(
-				"Targeted re-authentication accepts exactly one OAuth result. No saved credentials were changed.",
+				"Targeted login accepts exactly one OAuth result. No saved credentials were changed.",
 			);
 		}
 		const expectedAccountIndex =
@@ -670,6 +679,7 @@ export async function persistAccountPool(
 		const expectedAccount = options.expectedAccount;
 		if (
 			expectedAccount &&
+			!options.replaceAccount &&
 			writes.some((write) => !sameExpectedLoginIdentity(write, expectedAccount))
 		) {
 			throw new CodexValidationError(
@@ -677,7 +687,22 @@ export async function persistAccountPool(
 			);
 		}
 
-		const { accounts, activeIndex, outcome } = applyAccountPoolResults({
+		if (options.replaceAccount && expectedAccount && expectedAccountIndex !== undefined) {
+			if (
+				!matchesExpectedAccount(existing[expectedAccountIndex], expectedAccount) ||
+				(options.expectedAccountIndex !== undefined && expectedAccountIndex !== options.expectedAccountIndex)
+			) {
+				throw new CodexValidationError("The target account changed position or identity during login. No saved credentials were changed. Run list and retry.");
+			}
+			const otherAccounts = existing.filter((_, index) => index !== expectedAccountIndex);
+			if (writes.some((write) => findMatchingAccountIndex(otherAccounts, write, {
+				allowUniqueAccountIdFallbackWithoutEmail: true,
+			}) !== undefined)) {
+				throw new CodexValidationError("The authenticated account is already saved in another position. No saved credentials were changed.");
+			}
+		}
+
+		const { accounts, activeIndex, outcome: loginOutcome } = applyAccountPoolResults({
 			existing,
 			writes,
 			priorActiveIndex: stored?.activeIndex,
@@ -686,9 +711,19 @@ export async function persistAccountPool(
 					? findMatchingAccountIndex
 					: () => expectedAccountIndex,
 		});
+		if (options.replaceAccount && expectedAccountIndex !== undefined) {
+			const write = writes[0];
+			if (!write) return null;
+			const replacement = buildInsertedAccount(write).account;
+			replacement.enabled = existing[expectedAccountIndex]?.enabled !== false;
+			replacement.recordId = deriveAccountRecordId(replacement);
+			accounts[expectedAccountIndex] = replacement;
+		}
+		const outcome = options.replaceAccount ? "replaced" : loginOutcome;
+		const preserveSelection = options.preserveSelection || options.replaceAccount;
 
 		const nextActiveIndex =
-			options.preserveSelection &&
+			preserveSelection &&
 			validSelectionIndex(stored?.activeIndex, accounts)
 				? stored.activeIndex
 				: activeIndex;
@@ -701,7 +736,7 @@ export async function persistAccountPool(
 				activeIndexByFamily[family] = nextActiveIndex;
 				continue;
 			}
-			if (options.preserveSelection) {
+			if (preserveSelection) {
 				activeIndexByFamily[family] = priorFamilyIndex;
 				continue;
 			}
@@ -722,17 +757,15 @@ export async function persistAccountPool(
 				: priorFamilyIndex;
 		}
 
-		// Reuse the shared persistence clone so the pin/affinity carry-over rule
-		// (issue #474) keeps living in exactly one place instead of being
-		// re-derived at every write site with a slightly different validity check.
-		const nextStorage = cloneAccountStorageForPersistence(stored);
+		// Keep the load baseline so concurrent saves merge by record identity.
+		const nextStorage = stored
+			? cloneTrackedAccountStorage(stored)
+			: cloneAccountStorageForPersistence(stored);
 		nextStorage.accounts = accounts;
 		nextStorage.activeIndex = nextActiveIndex;
 		nextStorage.activeIndexByFamily = activeIndexByFamily;
-		// A selection-preserving login leaves the pool exactly where it was, so a
-		// manual `switch <n>` pin survives it: login only updates a row in place
-		// or appends one and never reorders, so the raw position still points at
-		// the row the user pinned even when two rows share an identity.
+		// Keep a manual `switch <n>` pin on the same position. During replacement
+		// the user explicitly wants that position to route to the new identity.
 		//
 		// A plain login is the opposite. It moves activeIndex onto the account
 		// just signed in and publishes that account to ~/.codex/auth.json.
@@ -741,11 +774,12 @@ export async function persistAccountPool(
 		// (runtime-rotation-proxy resolves pinnedAccountIndex first) -- the
 		// contradiction `status` reports as "runtime using N but pin requests M".
 		if (
-			!options.preserveSelection ||
+			!preserveSelection ||
 			!validSelectionIndex(nextStorage.pinnedAccountIndex, accounts)
 		) {
 			delete nextStorage.pinnedAccountIndex;
 		}
+		if (options.replaceAccount) bumpStorageAffinityGeneration(nextStorage);
 
 		await persist(nextStorage);
 
