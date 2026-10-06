@@ -32,7 +32,33 @@ test-results.md
 
 # local env files
 .env
-.env.local
+.env.*
+!.env.example
+!.env.*.example
+
+# Local Codex state and credential stores (including backups and journals)
+.codex/
+multi-auth/
+openai-codex-accounts.json*
+openai-codex-flagged-accounts.json*
+codex-accounts.json*
+auth.json*
+accounts.json*
+api-routes.json*
+local-client-tokens.json*
+*.pending-auth.json*
+refresh-leases/
+runtime-rotation-app-helper*.json
+runtime-observability.json*
+usage-ledger*.jsonl
+
+# Local cloud credentials and private key files
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
 
 # OMC session scratch (never publish)
 .omc/
