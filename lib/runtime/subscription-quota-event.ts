@@ -6,8 +6,10 @@ function windowFromEvent(value: unknown): QuotaSchedulerWindow {
 	const used = value.used_percent;
 	if (typeof used !== "number" || !Number.isFinite(used) || used < 0 || used > 100) return {};
 	const reset = value.reset_at;
+	const minutes = value.window_minutes;
 	return {
 		usedPercent: used,
+		...(typeof minutes === "number" && Number.isSafeInteger(minutes) && minutes >= 0 ? { windowMinutes: minutes } : {}),
 		...(typeof reset === "number" && Number.isSafeInteger(reset) && reset > 0 && Number.isSafeInteger(reset * 1000)
 			? { resetAtMs: reset * 1000 } : {}),
 	};

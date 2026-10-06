@@ -81,6 +81,23 @@ beforeEach(() => {
 });
 
 describe("refreshQuotaCacheForMenu", () => {
+	it("returns only successful live probes when requested, even with fresh cached values", async () => {
+		const stale = { ...CONCURRENT_ENTRY, updatedAt: Date.now(), primary: { usedPercent: 100, windowMinutes: 300, resetAtMs: Date.now() + 3600000 } };
+		const cache: QuotaCacheData = { byAccountId: { acc_a: stale, acc_b: stale }, byEmail: {} };
+		fetchCodexQuotaSnapshotMock.mockImplementation(async ({ accountId }: { accountId: string }) => {
+			if (accountId === "acc_b") throw new Error("network");
+			return { ...snapshotFor("gpt-5-codex"), observedAt: Date.now(), primary: { usedPercent: 2, windowMinutes: 300, resetAtMs: Date.now() + 3600000 } };
+		});
+		loadQuotaCacheMock.mockResolvedValue(structuredClone(cache));
+
+		const result = await refreshQuotaCacheForMenu(createStorage(Date.now()), cache, 0, undefined, { freshOnly: true });
+
+		expect(fetchCodexQuotaSnapshotMock).toHaveBeenCalledTimes(2);
+		expect(result.byAccountId.acc_a?.primary.usedPercent).toBe(2);
+		expect(result.byAccountId.acc_b).toBeUndefined();
+		expect(cache.byAccountId.acc_a?.primary.usedPercent).toBe(100);
+	});
+
 	it("rebases its results onto the freshest persisted cache before saving", async () => {
 		// Regression for the last-write-wins clobber: a concurrent writer (deep
 		// check, second session) saved acc_concurrent while the menu refresh was

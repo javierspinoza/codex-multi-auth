@@ -5,6 +5,36 @@ import {
 } from "../lib/preemptive-quota-scheduler.js";
 
 describe("preemptive quota scheduler", () => {
+	it("replaces an old depleted five-hour observation with a fresh weekly-only snapshot", () => {
+		const scheduler = new PreemptiveQuotaScheduler();
+		scheduler.update("fixture:model", { status: 200, updatedAt: 1000, primary: { usedPercent: 100, windowMinutes: 300, resetAtMs: 100_000 }, secondary: {} });
+		expect(scheduler.getDeferral("fixture:model", 1000).defer).toBe(true);
+		const snapshot = readQuotaSchedulerSnapshot(new Headers({
+			"x-codex-secondary-used-percent": "40",
+			"x-codex-secondary-window-minutes": "10080",
+			"x-codex-secondary-reset-after-seconds": "7200",
+		}), 200, 2000);
+		expect(snapshot?.primary.usedPercent).toBeUndefined();
+		expect(snapshot?.secondary.windowMinutes).toBe(10080);
+		if (!snapshot) throw Error("Expected quota snapshot");
+		scheduler.update("fixture:model", snapshot);
+		expect(scheduler.getDeferral("fixture:model", 2000)).toEqual({ defer: false, waitMs: 0 });
+	});
+
+	it("applies the weekly threshold when a weekly-only limit arrives in the primary slot", () => {
+		const scheduler = new PreemptiveQuotaScheduler({ remainingPercentThresholdPrimary: 10, remainingPercentThresholdSecondary: 2 });
+		scheduler.update("fixture:model", { status: 200, updatedAt: 1000, primary: { usedPercent: 95, windowMinutes: 10080, resetAtMs: 100_000 }, secondary: {} });
+		expect(scheduler.getDeferral("fixture:model", 1000).defer).toBe(false);
+		scheduler.update("fixture:model", { status: 200, updatedAt: 1000, primary: { usedPercent: 98, windowMinutes: 10080, resetAtMs: 100_000 }, secondary: {} });
+		expect(scheduler.getDeferral("fixture:model", 1000).defer).toBe(true);
+	});
+
+	it("applies the five-hour threshold when that window arrives in the secondary slot", () => {
+		const scheduler = new PreemptiveQuotaScheduler({ remainingPercentThresholdPrimary: 10, remainingPercentThresholdSecondary: 2 });
+		scheduler.update("fixture:model", { status: 200, updatedAt: 1000, primary: {}, secondary: { usedPercent: 95, windowMinutes: 300, resetAtMs: 100_000 } });
+		expect(scheduler.getDeferral("fixture:model", 1000).defer).toBe(true);
+	});
+
 	it("reads quota snapshot from codex headers", () => {
 		const headers = new Headers({
 			"x-codex-primary-used-percent": "99",

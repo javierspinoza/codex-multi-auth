@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { isQuotaCacheEntryExhausted } from "../lib/quota-readiness.js";
 
 describe("quota readiness", () => {
+	it.each(["primary", "secondary"] as const)("evaluates a weekly-only %s window without treating the missing window as exhausted", key => {
+		const entry = { primary: {}, secondary: {}, [key]: { usedPercent: 40, windowMinutes: 10080 } };
+		expect(isQuotaCacheEntryExhausted(entry)).toBe(false);
+		expect(isQuotaCacheEntryExhausted({ ...entry, [key]: { usedPercent: 100, windowMinutes: 10080 } })).toBe(true);
+	});
+
 	it("treats either exhausted quota window as unavailable", () => {
 		expect(
 			isQuotaCacheEntryExhausted({

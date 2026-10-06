@@ -176,7 +176,7 @@ describe("runBestCommand", () => {
 			| Array<{ family?: string; model?: string | null }>
 			| undefined;
 		// `best` picks the account for wrapper traffic, which is codex-family.
-		// DEFAULT_LIVE_PROBE_MODEL is gpt-5.6-sol, whose family is gpt-5.2, so a
+		// DEFAULT_LIVE_PROBE_MODEL is gpt-6-luna, whose family is gpt-5.2, so a
 		// bare invocation must leave both unset and fall back to codex rather
 		// than rank accounts against a family no wrapper request uses.
 		expect(getModelProfile(DEFAULT_LIVE_PROBE_MODEL).promptFamily).not.toBe(

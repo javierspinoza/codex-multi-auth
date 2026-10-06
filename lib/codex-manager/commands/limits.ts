@@ -6,17 +6,16 @@ import { redactEmails } from "../../redaction.js";
 import type { AccountStorageV3 } from "../../storage.js";
 
 const LIMITS_SCHEMA_VERSION = 1;
-const LIMITS_REFRESH_MAX_AGE_MS = 5 * 60_000;
-const LIMITS_USAGE = "Usage: codex-multi-auth limits --json [--refresh]";
+const LIMITS_USAGE = "Usage: codex-multi-auth limits --json";
 
 export interface LimitsCommandDeps {
 	setStoragePath: (path: string | null) => void;
 	loadAccounts: () => Promise<AccountStorageV3 | null>;
-	loadQuotaCache: () => Promise<QuotaCacheData>;
 	refreshQuotaCache: (
 		storage: AccountStorageV3,
 		cache: QuotaCacheData,
 		maxAgeMs: number,
+		options?: { freshOnly?: boolean },
 	) => Promise<QuotaCacheData>;
 	resolveActiveIndex: (
 		storage: AccountStorageV3,
@@ -29,7 +28,6 @@ export interface LimitsCommandDeps {
 
 interface ParsedLimitsOptions {
 	json: boolean;
-	refresh: boolean;
 	help: boolean;
 }
 
@@ -37,14 +35,10 @@ interface ParsedLimitsOptions {
 function parseLimitsOptions(args: string[]):
 	| { ok: true; options: ParsedLimitsOptions }
 	| { ok: false; message: string } {
-	const options: ParsedLimitsOptions = { json: false, refresh: false, help: false };
+	const options: ParsedLimitsOptions = { json: false, help: false };
 	for (const arg of args) {
 		if (arg === "--json" || arg === "-j") {
 			options.json = true;
-			continue;
-		}
-		if (arg === "--refresh") {
-			options.refresh = true;
 			continue;
 		}
 		if (arg === "--help" || arg === "-h") {
@@ -59,7 +53,7 @@ function parseLimitsOptions(args: string[]):
 	return { ok: true, options };
 }
 
-/** Convert a cached quota window to the explicit-null public JSON contract. */
+/** Convert a live quota window to the explicit-null public JSON contract. */
 function publicWindow(window: QuotaCacheEntry["primary"]) {
 	return {
 		usedPercent: window.usedPercent ?? null,
@@ -80,10 +74,8 @@ function publicQuotaEntry(entry: QuotaCacheEntry) {
 }
 
 /**
- * Emit configured accounts joined to safe cached quota records.
- *
- * Cached mode performs no provider requests. Refresh mode delegates to the
- * existing sequential, age-gated refresh path before serializing the snapshot.
+ * Emit configured accounts joined to live quota records. The local quota file
+ * remains an internal recovery artifact; it is never presented as current.
  */
 export async function runLimitsCommand(
 	args: string[],
@@ -110,7 +102,7 @@ export async function runLimitsCommand(
 				{
 					schemaVersion: LIMITS_SCHEMA_VERSION,
 					generatedAt,
-					mode: parsed.options.refresh ? "refresh" : "cached",
+					mode: "live",
 					// Keep the key set identical for an empty pool so a consumer
 					// never has to branch on its presence. There is no account to
 					// route to, so `routedIndex` is null rather than a positional 0
@@ -129,14 +121,12 @@ export async function runLimitsCommand(
 		return 0;
 	}
 
-	let cache = await deps.loadQuotaCache();
-	if (parsed.options.refresh) {
-		cache = await deps.refreshQuotaCache(
-			storage,
-			cache,
-			LIMITS_REFRESH_MAX_AGE_MS,
-		);
-	}
+	const cache = await deps.refreshQuotaCache(
+		storage,
+		{ byAccountId: {}, byEmail: {} },
+		0,
+		{ freshOnly: true },
+	);
 
 	const generatedAt = deps.getNow?.() ?? Date.now();
 	const selection = resolveSelection(storage, deps.resolveActiveIndex);
@@ -163,7 +153,7 @@ export async function runLimitsCommand(
 			{
 				schemaVersion: LIMITS_SCHEMA_VERSION,
 				generatedAt,
-				mode: parsed.options.refresh ? "refresh" : "cached",
+				mode: "live",
 				selection,
 				accounts,
 			},

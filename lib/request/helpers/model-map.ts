@@ -124,29 +124,21 @@ const CODEX_MINI_REPLACEMENT_MODEL = "gpt-5.6-terra";
 export const DEFAULT_MODEL = "gpt-6.1-sol";
 
 // Model used for diagnostic live/quota probes (`check`, `report`, `best`).
-// Deliberately distinct from DEFAULT_MODEL: GPT-5.6 is the latest general family
-// (issue #627) with a year of rollout behind it, so the probe leads with it —
-// a probe only needs a response's quota headers, and leading with a fresh
-// launch model (Astra on 2026-09-03, 6.1 Sol on 2026-09-29) spends one failed
-// request per probe on every account not yet entitled and buys nothing. Move
-// DEFAULT_PROBE_MODEL forward once a newer model is broadly available.
-// Bare `gpt-5.6` aliases to Sol; we pin the canonical id so the probe display
-// and report `modelSelection` read `gpt-5.6-sol` without a remap arrow.
-export const DEFAULT_PROBE_MODEL = "gpt-5.6-sol";
+// A probe only needs quota headers or a tiny first-use response. GPT-6 Luna
+// suits this focused workload and already participates in the probe chain.
+// Pin its canonical id so diagnostics show the model actually requested.
+export const DEFAULT_PROBE_MODEL = "gpt-6-luna";
 
 // Single source of truth for the live/quota probe fallback chain. Both the
 // manager probe (lib/quota-probe.ts) and the runtime probe (lib/runtime/quota-probe.ts)
 // import this so the ordered candidate list cannot drift between them.
 //
-// Every entry must be a model the Codex backend still serves. The chain used to
-// end on `gpt-5.4` and three codex models; all four are gone from the upstream
-// catalog (`gpt-5.4` carries `retirement_at: 2026-08-31`), so a probe that
-// reached them spent requests on guaranteed failures. `gpt-6-luna` closes it
-// because it is offered on the most plans of any catalog model (24).
+// Keep the previous Sol candidates as distinct fallbacks for accounts that
+// reject Luna. Every entry must still be served by the Codex backend.
 export const QUOTA_PROBE_MODEL_CHAIN = [
 	DEFAULT_PROBE_MODEL,
+	CURRENT_CODEX_MODEL,
 	DEFAULT_MODEL,
-	"gpt-6-luna",
 ] as const;
 
 /**

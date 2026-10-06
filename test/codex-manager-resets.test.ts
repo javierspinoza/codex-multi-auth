@@ -4,8 +4,8 @@ vi.mock('../lib/runtime/account-reset-credits.js',async original=>({...await ori
 vi.mock('../lib/runtime/model-discovery-status.js',async original=>({...await original<typeof import('../lib/runtime/model-discovery-status.js')>(),refreshAndPrintModelInventory:f.capabilities}));
 vi.mock('../lib/storage.js',async original=>({...await original<typeof import('../lib/storage.js')>(),loadAccounts:async()=>({version:3,activeIndex:0,accounts:[{accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1},...f.extraAccounts]})}));
 import { runResetsCommand } from '../lib/codex-manager/commands/resets.js';
-beforeEach(()=>{vi.clearAllMocks();f.extraAccounts=[];vi.spyOn(console,'log').mockImplementation(()=>{});vi.spyOn(console,'error').mockImplementation(()=>{});f.list.mockResolvedValue({version:1,policy:'manual',snapshots:{}});f.redeem.mockResolvedValue('reset');f.capabilities.mockResolvedValue(true);});
-it('lists without provider reads or redemption by default',async()=>{expect(await runResetsCommand([])).toBe(0);expect(f.refresh).not.toHaveBeenCalled();expect(f.redeem).not.toHaveBeenCalled();});
+beforeEach(()=>{vi.clearAllMocks();f.extraAccounts=[];f.refresh.mockReset();f.refresh.mockResolvedValue(undefined);vi.spyOn(console,'log').mockImplementation(()=>{});vi.spyOn(console,'error').mockImplementation(()=>{});f.list.mockResolvedValue({version:1,policy:'manual',snapshots:{}});f.redeem.mockResolvedValue('reset');f.capabilities.mockResolvedValue(true);});
+it('lists without provider reads or redemption by default',async()=>{expect(await runResetsCommand([])).toBe(0);expect(f.refresh).toHaveBeenCalledTimes(1);expect(f.redeem).not.toHaveBeenCalled();});
 it('requires an explicit valid account to redeem',async()=>{for(const args of [['redeem'],['redeem','0'],['redeem','2'],['redeem','1','extra']])expect(await runResetsCommand(args)).toBe(1);expect(f.redeem).not.toHaveBeenCalled();expect(await runResetsCommand(['redeem','1'])).toBe(0);expect(f.redeem).toHaveBeenCalledTimes(1);});
 it('changes policy only by explicit command',async()=>{expect(await runResetsCommand(['auto','last-resort'])).toBe(0);expect(f.policy).toHaveBeenCalledWith('last-resort');expect(f.redeem).not.toHaveBeenCalled();});
 it('does not retry an ambiguous redemption or print secret backend errors',async()=>{f.redeem.mockRejectedValue(Error('secret'));expect(await runResetsCommand(['redeem','1'])).toBe(1);expect(f.redeem).toHaveBeenCalledTimes(1);expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('secret');});
@@ -35,7 +35,7 @@ it('check capabilities refreshes only model discovery through the CLI dispatcher
 
 it('reports reset availability read failures without claiming a pending redemption', async () => {
  f.refresh.mockRejectedValue(Error('secret backend detail'));
- expect(await runResetsCommand(['list','--refresh'])).toBe(1);
+ expect(await runResetsCommand(['list'])).toBe(1);
  expect(console.error).toHaveBeenCalledWith('Reset-credit availability could not be refreshed. No credits were redeemed.');
  expect(f.redeem).not.toHaveBeenCalled();
 });
@@ -43,7 +43,7 @@ it('reports reset availability read failures without claiming a pending redempti
 it.each([false,true])('restores the caller storage state after standalone reset list (failure=%s)',async fails=>{
  const {runWithStoragePathState,getStoragePathState}=await import('../lib/storage/path-state.js');
  const previous={currentStoragePath:'/fixture/shared/project/accounts.json',currentProjectRoot:'/fixture/project',currentLegacyProjectStoragePath:'/fixture/project/.legacy/accounts.json',currentLegacyWorktreeStoragePath:'/fixture/old-worktree/accounts.json'};
- if(fails)f.list.mockRejectedValueOnce(Error('provider unavailable'));
+ if(fails)f.refresh.mockRejectedValueOnce(Error('provider unavailable'));
  await runWithStoragePathState(previous,async()=>{
   expect(await runResetsCommand(['list'])).toBe(fails?1:0);
   expect(getStoragePathState()).toEqual(previous);
@@ -90,7 +90,7 @@ it('identifies a disabled pending account without calling it removed',async()=>{
 
 it('reports every failed refresh and exits nonzero instead of silently succeeding with unknown counts', async () => {
  f.refresh.mockResolvedValue({});
- expect(await runResetsCommand(['list', '--refresh'])).toBe(1);
+ expect(await runResetsCommand(['list'])).toBe(1);
  expect(console.error).toHaveBeenCalledWith(expect.stringContaining('1 of 1 reset-credit reads failed'));
  expect(console.error).toHaveBeenCalledWith(expect.stringContaining('CODEX_MULTI_AUTH_USAGE_CODEX_BIN'));
  expect(f.redeem).not.toHaveBeenCalled();
@@ -102,7 +102,7 @@ it('keeps successful rows while reporting a partially failed refresh', async () 
  f.extraAccounts = [other];
  const key = resetTargetForStoredAccount(other)!.key;
  f.refresh.mockResolvedValue({ [key]: { updatedAt: Date.now(), availableCount: 2 } });
- expect(await runResetsCommand(['list', '--refresh'])).toBe(1);
+ expect(await runResetsCommand(['list'])).toBe(1);
  expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Account 2: 2 reset credits'));
  expect(console.error).toHaveBeenCalledWith(expect.stringContaining('1 of 2 reset-credit reads failed'));
  expect(f.redeem).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ it('accepts a successful read whose credit count is unavailable', async () => {
  const {resetTargetForStoredAccount}=await import('../lib/runtime/account-reset-credits.js');
  const key=resetTargetForStoredAccount({accountId:'workspace',email:'reader@example.test',refreshToken:'secret',addedAt:1,lastUsed:1})!.key;
  f.refresh.mockResolvedValue({[key]:{updatedAt:Date.now(),availableCount:null}});
- expect(await runResetsCommand(['list','--refresh'])).toBe(0);
+ expect(await runResetsCommand(['list'])).toBe(0);
  expect(console.error).not.toHaveBeenCalled();
  expect(console.log).toHaveBeenCalledWith(expect.stringContaining('unknown reset credits (checked'));
 });

@@ -74,18 +74,18 @@ function emittedJson(deps: ReturnType<typeof createDeps>): Record<string, unknow
 }
 
 describe("runLimitsCommand", () => {
-	it("emits configured accounts joined to cached quota and excludes secrets and orphan entries", async () => {
+	it("emits configured accounts joined to live quota and excludes secrets and orphan entries", async () => {
 		const deps = createDeps();
 
 		const exitCode = await runLimitsCommand(["--json"], deps);
 
 		expect(exitCode).toBe(0);
-		expect(deps.refreshQuotaCache).not.toHaveBeenCalled();
+		expect(deps.refreshQuotaCache).toHaveBeenCalledWith(expect.any(Object), { byAccountId: {}, byEmail: {} }, 0, { freshOnly: true });
 		const payload = emittedJson(deps);
 		expect(payload).toMatchObject({
 			schemaVersion: 1,
 			generatedAt: NOW,
-			mode: "cached",
+			mode: "live",
 		});
 		expect(payload).not.toHaveProperty("accountCount");
 		expect(payload).not.toHaveProperty("activeIndex");
@@ -148,7 +148,7 @@ describe("runLimitsCommand", () => {
 		});
 	});
 
-	it("uses a safe unique-email fallback without exposing orphan cache entries", async () => {
+	it("uses a safe unique-email fallback from the live result without exposing orphan cache entries", async () => {
 		const cache = quotaCache();
 		cache.byAccountId = {};
 		cache.byEmail["one@example.com"] = {
@@ -190,33 +190,11 @@ describe("runLimitsCommand", () => {
 		expect(accounts.map((account) => account.quota)).toEqual([null, null]);
 	});
 
-	it("age-gates an explicit refresh before emitting the refreshed cache", async () => {
+	it("rejects the removed refresh flag", async () => {
 		const deps = createDeps();
-		const refreshed = quotaCache();
-		refreshed.byAccountId["acct-1"] = {
-			...refreshed.byAccountId["acct-1"],
-			updatedAt: NOW,
-			primary: { usedPercent: 20, windowMinutes: 300 },
-		};
-		deps.refreshQuotaCache.mockResolvedValueOnce(refreshed);
-
 		const exitCode = await runLimitsCommand(["--refresh", "--json"], deps);
-
-		expect(exitCode).toBe(0);
-		expect(deps.refreshQuotaCache).toHaveBeenCalledWith(
-			expect.any(Object),
-			expect.any(Object),
-			300_000,
-		);
-		expect(deps.refreshQuotaCache.mock.invocationCallOrder[0]).toBeLessThan(
-			deps.getNow.mock.invocationCallOrder[0] ?? 0,
-		);
-		const payload = emittedJson(deps);
-		expect(payload.mode).toBe("refresh");
-		const accounts = payload.accounts as Array<Record<string, unknown>>;
-		expect(accounts[0]).toMatchObject({
-			quota: { updatedAt: NOW, primary: { usedPercent: 20 } },
-		});
+		expect(exitCode).toBe(1);
+		expect(deps.logError).toHaveBeenCalledWith("Unknown limits option: --refresh");
 	});
 
 	it("emits a stable empty snapshot when no accounts are configured", async () => {
@@ -231,7 +209,7 @@ describe("runLimitsCommand", () => {
 		expect(emittedJson(deps)).toEqual({
 			schemaVersion: 1,
 			generatedAt: NOW,
-			mode: "cached",
+			mode: "live",
 			selection: {
 				pinnedIndex: null,
 				routedIndex: null,
@@ -339,7 +317,7 @@ describe("runLimitsCommand", () => {
 
 		expect(exitCode).toBe(0);
 		expect(deps.logInfo).toHaveBeenCalledWith(
-			"Usage: codex-multi-auth limits --json [--refresh]",
+			"Usage: codex-multi-auth limits --json",
 		);
 		expect(deps.loadAccounts).not.toHaveBeenCalled();
 	});
@@ -351,7 +329,7 @@ describe("runLimitsCommand", () => {
 
 		expect(exitCode).toBe(1);
 		expect(deps.logError).toHaveBeenCalledWith(
-			"Usage: codex-multi-auth limits --json [--refresh]",
+			"Usage: codex-multi-auth limits --json",
 		);
 		expect(deps.logInfo).not.toHaveBeenCalled();
 	});

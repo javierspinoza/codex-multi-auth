@@ -132,10 +132,11 @@ const CACHE_FILES: Record<ModelFamily, string> = {
 /**
  * Determine the prompt family based on the effective model name.
  *
- * GPT-5.4/5.5-era general-purpose models intentionally stay on the GPT-5.2
- * prompt family until upstream Codex releases a newer general prompt file.
+ * GPT-6 and GPT-5.6 models share the historical GPT-5.2 template and persisted
+ * family keys. This label selects instructions and quota buckets; the model
+ * sent to the backend is the profile's normalizedModel.
  *
- * @param normalizedModel - The normalized model name (e.g., "gpt-5-codex", "gpt-5.4", "gpt-5-mini")
+ * @param normalizedModel - The normalized model name (e.g., "gpt-6-luna", "gpt-6.1-sol")
  * @returns The model family for prompt selection
  */
 export function getModelFamily(normalizedModel: string): ModelFamily {

@@ -177,15 +177,28 @@ describe("runOAuthFlow callback-failure guidance", () => {
 		);
 	});
 
-	it("prints a usable URL when browser and clipboard fallbacks both fail", async () => {
-		hooks.serverInfo = serverThatTimesOut();
-		hooks.openBrowserUrl = false;
-		hooks.copyTextToClipboard = false;
+	it.each([
+		{ browserOpened: true, clipboardCopied: true },
+		{ browserOpened: false, clipboardCopied: true },
+		{ browserOpened: false, clipboardCopied: false },
+	])("prints a usable URL before waiting for the callback: %o", async ({
+		browserOpened,
+		clipboardCopied,
+	}) => {
+		const authorizationUrl =
+			"https://auth.openai.com/oauth/authorize?state=test-state&code_challenge=challenge";
+		const serverInfo = serverThatTimesOut();
+		serverInfo.waitForCode.mockImplementation(async () => {
+			expect(logged).toContain(authorizationUrl);
+			return null;
+		});
+		hooks.serverInfo = serverInfo;
+		hooks.openBrowserUrl = browserOpened;
+		hooks.copyTextToClipboard = clipboardCopied;
 
 		await runOAuthFlow(false, "browser");
 
-		expect(logged.join("\n")).toContain(
-			"https://auth.openai.com/oauth/authorize?state=test-state&code_challenge=challenge",
-		);
+		expect(logged.filter((line) => line === authorizationUrl)).toHaveLength(1);
+		expect(logged.join("\n")).not.toContain("%3Credacted%3E");
 	});
 });

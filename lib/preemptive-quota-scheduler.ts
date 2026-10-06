@@ -4,6 +4,7 @@ import { quotaLeftPercentFromUsed } from "./quota-readiness.js";
 export interface QuotaSchedulerWindow {
 	usedPercent?: number;
 	resetAtMs?: number;
+	windowMinutes?: number;
 }
 
 export interface QuotaSchedulerSnapshot {
@@ -155,6 +156,8 @@ export function readQuotaSchedulerSnapshot(headers: Headers, status: number, now
 	const secondaryUsed = parseFiniteNumberHeader(headers, `${secondaryPrefix}-used-percent`);
 	const primaryResetAt = parseResetAtMs(headers, primaryPrefix, now);
 	const secondaryResetAt = parseResetAtMs(headers, secondaryPrefix, now);
+	const primaryMinutes = parseFiniteIntHeader(headers, `${primaryPrefix}-window-minutes`);
+	const secondaryMinutes = parseFiniteIntHeader(headers, `${secondaryPrefix}-window-minutes`);
 
 	const hasSignal =
 		typeof primaryUsed === "number" ||
@@ -165,8 +168,8 @@ export function readQuotaSchedulerSnapshot(headers: Headers, status: number, now
 
 	return {
 		status,
-		primary: { usedPercent: primaryUsed, resetAtMs: primaryResetAt },
-		secondary: { usedPercent: secondaryUsed, resetAtMs: secondaryResetAt },
+		primary: { usedPercent: primaryUsed, resetAtMs: primaryResetAt, ...(primaryMinutes !== undefined ? { windowMinutes: primaryMinutes } : {}) },
+		secondary: { usedPercent: secondaryUsed, resetAtMs: secondaryResetAt, ...(secondaryMinutes !== undefined ? { windowMinutes: secondaryMinutes } : {}) },
 		updatedAt: now,
 	};
 }
@@ -311,14 +314,17 @@ export class PreemptiveQuotaScheduler {
 			}
 		}
 
+		const thresholdForWindow = (window: QuotaSchedulerWindow, fallback: number): number =>
+			window.windowMinutes === 10080 ? this.secondaryRemainingPercentThreshold
+				: window.windowMinutes === 300 ? this.primaryRemainingPercentThreshold : fallback;
 		const primaryNearExhausted =
 			typeof snapshot.primary.usedPercent === "number" &&
 			Number.isFinite(snapshot.primary.usedPercent) &&
-			snapshot.primary.usedPercent >= 100 - this.primaryRemainingPercentThreshold;
+			snapshot.primary.usedPercent >= 100 - thresholdForWindow(snapshot.primary, this.primaryRemainingPercentThreshold);
 		const secondaryNearExhausted =
 			typeof snapshot.secondary.usedPercent === "number" &&
 			Number.isFinite(snapshot.secondary.usedPercent) &&
-			snapshot.secondary.usedPercent >= 100 - this.secondaryRemainingPercentThreshold;
+			snapshot.secondary.usedPercent >= 100 - thresholdForWindow(snapshot.secondary, this.secondaryRemainingPercentThreshold);
 		const getNearExhaustedWait = (window: QuotaSchedulerWindow): number => {
 			const trustedWait = trustedResetWaitMs(window, snapshot, now);
 			return trustedWait === null ? this.maxDeferralMs : trustedWait;

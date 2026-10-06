@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { fetchRuntimeCodexQuotaSnapshot } from "../lib/runtime/quota-probe.js";
 import {
+	CURRENT_CODEX_MODEL,
 	DEFAULT_MODEL,
 	DEFAULT_PROBE_MODEL,
 } from "../lib/request/helpers/model-map.js";
@@ -32,6 +33,13 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			expect((init?.headers as Headers).get("content-type")).toBe(
 				"application/json",
 			);
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				model: "gpt-6-luna",
+				instructions: "instructions:gpt-6-luna",
+				stream: true,
+				store: false,
+				reasoning: { effort: "low" },
+			});
 			return new Response("", { status: 200, headers: makeQuotaHeaders() });
 		});
 
@@ -46,26 +54,24 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			getUnsupportedCodexModelInfo: () => ({ isUnsupported: false }),
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_PROBE_MODEL);
+		expect(snapshot.model).toBe("gpt-6-luna");
 		expect(snapshot.planType).toBe("plus");
 		expect(parseCodexQuotaSnapshot).toHaveBeenCalledOnce();
 	});
 
-	it("falls back to the next model when the first one is unsupported", async () => {
-		const fetchImpl = vi
-			.fn()
-			.mockResolvedValueOnce(
-				new Response(
-					JSON.stringify({ error: { message: "unsupported" } }),
-					{
-						status: 400,
-						headers: new Headers({ "content-type": "application/json" }),
-					},
-				),
-			)
-			.mockResolvedValueOnce(
-				new Response("", { status: 200, headers: makeQuotaHeaders() }),
-			);
+	it.each([
+		[CURRENT_CODEX_MODEL, [DEFAULT_PROBE_MODEL]],
+		[DEFAULT_MODEL, [DEFAULT_PROBE_MODEL, CURRENT_CODEX_MODEL]],
+	] as const)("falls back from Luna to %s when preceding models are unsupported", async (winningModel, unsupportedModels) => {
+		const fetchImpl = vi.fn<typeof fetch>();
+		for (const model of unsupportedModels) {
+			fetchImpl.mockResolvedValueOnce(Response.json({
+				error: { message: `Model ${model} unsupported` },
+			}, { status: 400 }));
+		}
+		fetchImpl.mockResolvedValueOnce(
+			new Response("", { status: 200, headers: makeQuotaHeaders() }),
+		);
 
 		const snapshot = await fetchRuntimeCodexQuotaSnapshot({
 			accountId: "acc-1",
@@ -94,7 +100,7 @@ describe("fetchRuntimeCodexQuotaSnapshot", () => {
 			}),
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_MODEL);
-		expect(fetchImpl).toHaveBeenCalledTimes(2);
+		expect(snapshot.model).toBe(winningModel);
+		expect(fetchImpl.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual([...unsupportedModels, winningModel]);
 	});
 });

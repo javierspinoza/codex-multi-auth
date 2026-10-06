@@ -1,6 +1,9 @@
 import {expect,it} from "vitest";
 import {readSubscriptionQuotaEvent} from "../lib/runtime/subscription-quota-event.js";
 const now=1700000000000;
+it("keeps weekly-only events and their duration without recreating the absent five-hour window", () => {
+ expect(readSubscriptionQuotaEvent({type:"codex.rate_limits",plan_type:"plus",rate_limits:{primary:null,secondary:{used_percent:40,window_minutes:10080,reset_at:1700010000}}},now)).toEqual({status:200,updatedAt:now,planType:"plus",primary:{},secondary:{usedPercent:40,windowMinutes:10080,resetAtMs:1700010000000}});
+});
 it("reads fractional quota, reset timestamps and plan from native WebSocket events",()=>{
  expect(readSubscriptionQuotaEvent({type:"codex.rate_limits",plan_type:"pro",rate_limits:{secondary:{used_percent:94,reset_at:1700010000},primary:{used_percent:7.5}}},now)).toEqual({status:200,updatedAt:now,planType:"pro",primary:{usedPercent:7.5},secondary:{usedPercent:94,resetAtMs:1700010000000}});
 });

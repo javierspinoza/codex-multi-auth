@@ -8,7 +8,7 @@ These files are optional model/provider templates for host/plugin configurations
 | --- | --- |
 | [`codex-modern.json`](./codex-modern.json) | Modern variant-based template |
 | [`codex-legacy.json`](./codex-legacy.json) | Legacy explicit-model template |
-| [`minimal-codex.json`](./minimal-codex.json) | Minimal debug template |
+| [`minimal-codex.json`](./minimal-codex.json) | Minimal debug template using GPT-6 Luna |
 
 ## Notes
 

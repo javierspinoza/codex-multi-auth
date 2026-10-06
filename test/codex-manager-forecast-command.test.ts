@@ -208,7 +208,7 @@ describe("runForecastCommand", () => {
 		const defaulted = evaluateForecastAccounts.mock.calls.at(-1)?.[0] as
 			| Array<{ family?: string; model?: string | null }>
 			| undefined;
-		// DEFAULT_PROBE_MODEL is gpt-5.6-sol, family gpt-5.2 - NOT codex. A bare
+		// DEFAULT_PROBE_MODEL is gpt-6-luna, family gpt-5.2 - NOT codex. A bare
 		// `forecast` must leave family and model unset so evaluation keeps the
 		// codex default, matching the family /codex/responses buckets into.
 		expect(getModelProfile(DEFAULT_PROBE_MODEL).promptFamily).not.toBe("codex");

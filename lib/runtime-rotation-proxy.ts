@@ -2610,17 +2610,15 @@ async function handleRequestInner(
 			reconcileManualSelection();
 			const observeQuota = (snapshot: QuotaSchedulerSnapshot, planType?: string): void => {
 				const previous = requestScope ? quotaForScope(refreshed.account, requestScope) : undefined;
-				const merged = {
-					...snapshot,
-					primary: snapshot.primary.usedPercent === undefined ? previous?.primary ?? snapshot.primary : snapshot.primary,
-					secondary: snapshot.secondary.usedPercent === undefined ? previous?.secondary ?? snapshot.secondary : snapshot.secondary,
-				};
-				state.preemptiveQuotaScheduler.update(quotaScheduleKey, merged);
+				// Missing windows are unknown in this observation. Carrying an older
+				// 5h window into a fresh weekly-only snapshot invents a current blocker
+				// and can bench an account after the service stops reporting that limit.
+				state.preemptiveQuotaScheduler.update(quotaScheduleKey, snapshot);
 				if (state.nativeOpenai && requestScope && isResponsesRequest) {
 					const observations = state.subscriptionQuotaObservations ??= new Map();
 					const key = JSON.stringify([requestScope.id, context.model]);
 					if (observations.size >= 1000 && !observations.has(key)) observations.delete(observations.keys().next().value ?? "");
-					observations.set(key, { ...merged, model: context.model ?? "unknown", planType: planType ?? previous?.planType });
+					observations.set(key, { ...snapshot, model: context.model ?? "unknown", planType: planType ?? previous?.planType });
 				}
 			};
 			const quotaSnapshot = readQuotaSchedulerSnapshot(upstream.headers, upstream.status, state.now());

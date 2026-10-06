@@ -92,6 +92,7 @@ function resolveMenuQuotaProbeInput(
 		emailFallbackState,
 	);
 	if (
+		maxAgeMs > 0 &&
 		existing &&
 		typeof existing.updatedAt === "number" &&
 		Number.isFinite(existing.updatedAt) &&
@@ -173,9 +174,11 @@ export async function refreshQuotaCacheForMenu(
 	cache: QuotaCacheData,
 	maxAgeMs: number,
 	onProgress?: (current: number, total: number) => void,
+	options?: { freshOnly?: boolean },
 ): Promise<QuotaCacheData> {
+	const liveCache: QuotaCacheData | null = options?.freshOnly ? { byAccountId: {}, byEmail: {} } : null;
 	if (storage.accounts.length === 0) {
-		return cache;
+		return liveCache ?? cache;
 	}
 
 	const emailFallbackState = buildQuotaEmailFallbackState(storage.accounts);
@@ -184,7 +187,7 @@ export async function refreshQuotaCacheForMenu(
 	const targets = collectMenuQuotaRefreshTargets(
 		storage,
 		nextCache,
-		maxAgeMs,
+		liveCache ? 0 : maxAgeMs,
 		now,
 		emailFallbackState,
 	);
@@ -214,9 +217,10 @@ export async function refreshQuotaCacheForMenu(
 				emailFallbackState,
 			);
 			if (applied) appliedSnapshots.push({ account: target.account, snapshot });
+			if (liveCache) updateQuotaCacheForAccount(liveCache, target.account, snapshot, storage.accounts, emailFallbackState);
 			changed = applied || changed;
 		} catch {
-			// Keep existing cached values if probing fails.
+			// Dashboard callers retain cached values; live-only callers leave this account unknown.
 		}
 	}
 
@@ -270,10 +274,10 @@ export async function refreshQuotaCacheForMenu(
 				`Quota cache save failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		return cacheToSave;
+		return liveCache ?? cacheToSave;
 	}
 
-	return nextCache;
+	return liveCache ?? nextCache;
 }
 
 function mapAccountStatus(

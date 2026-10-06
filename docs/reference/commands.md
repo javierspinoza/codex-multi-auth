@@ -48,12 +48,12 @@ per-project pools are a runtime-proxy routing concern, not a CLI one.
 | --- | --- |
 | `codex-multi-auth login` | OAuth login; opens the interactive auth dashboard on a TTY when the pool is populated. Flags: `--device-auth`, `--manual`/`--no-browser`, `--org <org_id>`, `--preserve-selection`, `--account <index\|email\|account_id>` |
 | `codex-multi-auth login --api` | Manage API/ZDR credentials, priority, and visible models in an interactive terminal (TTY only; use alone) |
-| `codex-multi-auth status` | Account pool, pin, runtime metrics, storage summary, cached model discovery; `list` is the same command (`--json`) |
+| `codex-multi-auth status` | Detailed account pool, pin, runtime metrics, storage summary, and cached model discovery (`--json`). `list` probes quota on every call and shows a compact quota table; accepts `--verbose` and the same `--json` contract |
 | `codex-multi-auth switch <index>` | Set the active account by 1-based index and pin it for runtime routing |
 | `codex-multi-auth unpin` | Clear the manual pin set by `switch` and resume hybrid rotation |
 | `codex-multi-auth workspace <account> [workspace]` | List an account's tracked workspaces, or set its active workspace |
 | `codex-multi-auth best` | Pick the forecast-best account and switch to it; clears any manual pin. Flags: `--live`/`-l`, `--json`/`-j`, `--model`/`-m` |
-| `codex-multi-auth resets` | Earned subscription reset credits: `list [--refresh]`, `redeem <account>`, `auto manual\|last-resort` |
+| `codex-multi-auth resets` | Earned subscription reset credits queried live: `list`, `redeem <account>`, `auto manual\|last-resort` |
 
 > Sticky session affinity: `switch`, `unpin`, and `best` all bump an
 > `affinityGeneration` counter in storage. When the runtime proxy observes a
@@ -66,7 +66,7 @@ per-project pools are a runtime-proxy routing concern, not a CLI one.
 | Command | Description |
 | --- | --- |
 | `codex-multi-auth check` | Live-probe account health, reset credits, and model/capability discovery: `check [accounts\|resets\|capabilities] [--prime]` |
-| `codex-multi-auth limits` | Machine-readable quota windows; `--json` required, `--refresh` is a five-minute age-gated live probe |
+| `codex-multi-auth limits` | Machine-readable quota windows queried live; `--json` required |
 | `codex-multi-auth forecast` | Forecast the best account by readiness/risk without switching: `--live --json --explain --model --no-runtime-overlay` |
 | `codex-multi-auth report` | Full health report: `--live --json --explain --model --max-accounts <n> --max-probes <n> --cached-only --out <path>` |
 | `codex-multi-auth fix` | Apply safe account storage fixes: `--dry-run`/`-n`, `--json`, `--live`, `--model` |
@@ -143,7 +143,8 @@ All governance state is file-backed under `~/.codex/multi-auth`.
 | `--now`, `-n` | why-selected | Recompute the current selection from live state (default). On fix/doctor/verify-flagged, `-n` means `--dry-run` instead |
 | `--last`, `-l` | why-selected | Recompute selection and attach the last persisted runtime snapshot |
 | `--clear-accounts` | uninstall | Also remove stored account credentials and API keys (irreversible) |
-| `--refresh` | limits, resets list | Age-gated live refresh (five-minute floor) |
+| `--verbose` | list | Show the detailed `status` diagnostic view |
+| `--hola` | list | Send `hola` sequentially to every saved OAuth account with GPT-6 Luna and print each response |
 | `--prime` | check | Also send the tiny first-use request to genuinely unused Personal subscriptions |
 | `--remove` / `--dry-run` | `codex-multi-auth-app-launcher` | Remove managed launcher routing, or preview without writing |
 
@@ -151,8 +152,111 @@ All governance state is file-backed under `~/.codex/multi-auth`.
 `account policy list`, `resets`, and `rotation reset-rate-limits` /
 `rotation reset-runtime`; the row above is the documentation-test anchor list.
 
-Default live-probe model when `--model` is omitted is `gpt-5.6-sol`
+Default live-probe model when `--model` is omitted is `gpt-6-luna`
 (`DEFAULT_PROBE_MODEL`); request routing defaults to `gpt-6.1-sol` (`DEFAULT_MODEL`).
+Live/quota probes try `gpt-6-luna` → `gpt-5.6-sol` → `gpt-6.1-sol` when a
+candidate is unavailable. An explicit `--model` remains the first candidate.
+The diagnostic `prompt family gpt-5.2` label identifies the shared instruction
+template and persisted quota keys; it does not select GPT-5.2 for inference.
+
+---
+
+## `codex-multi-auth list`
+
+```bash
+codex-multi-auth list
+codex-multi-auth list --verbose
+codex-multi-auth list --json
+codex-multi-auth list --hola
+codex-multi-auth list --hola --json
+```
+
+`list --hola` starts an independent conversation for each saved OAuth account,
+in its original account-number order, sends exactly `hola` using `gpt-6-luna`,
+and waits for a completed text response before continuing. Responses appear in
+the terminal; these conversations are not saved in the app's chat history.
+This mode sends actual inference requests and consumes the accounts' quota.
+It replaces the quota-table operation for that invocation, so no additional
+quota-ping request is sent. Quota headers from completed greetings update the
+local cache, and usage is recorded in the redacted local ledger.
+
+The command targets each account's selected workspace. It does not switch the
+official CLI's active account, change manual pins, or change enabled flags.
+Because this is an explicit greeting of every saved account, accounts disabled
+for automatic rotation are included; API/ZDR routes are outside the OAuth pool.
+Expired credentials are renewed and saved before sending. A rejected HTTP 401
+allows one credential renewal and another attempt on that same account.
+Other failures are reported per account and the command continues; accepted
+turns are never retried automatically. Luna rejection is reported without
+substituting another model. Exit status is 1 if any account fails or the pool is
+empty, otherwise 0.
+
+`list --hola --json` prints one object containing `model`, `prompt`, per-account
+`results`, and `summary` counts (`total`, `completed`, `failed`); progress and
+errors go to stderr. This greeting result is separate from the ordinary
+`list --json` status schema. `--hola` cannot be combined with `--verbose`.
+
+The [official Codex model guide](https://developers.openai.com/codex/models)
+identifies GPT-6 Luna as a model for focused, repeatable tasks; account access
+depends on rollout and permissions. Its
+[model reference](https://developers.openai.com/api/docs/models/gpt-6-luna)
+confirms the `gpt-6-luna` identifier and Responses API support. Greetings use
+the existing Codex model profile's `low` reasoning effort, `stream: true`, and
+`store: false`.
+
+The default text view is a compact Spanish table of account numbers, saved names,
+email addresses, plan,
+remaining five-hour and weekly quota, local reset dates (`DD/MM HH:mm`),
+availability, and the last inference dispatch time (`ÚLTIMA SOLICITUD`, local
+`DD/MM HH:mm:ss`). Accounts appear in descending order of remaining five-hour quota;
+weekly quota breaks ties, and unknown values follow known values. Original account
+numbers still match `switch`; display sorting does not change routing or selection.
+The footer shows whether runtime rotation is enabled and the stored selected account,
+including any manual pin that suspends automatic switching. This reflects the
+effective configuration, including the environment override, rather than proving
+that a running Codex session has loaded it.
+The observation timestamp and local UTC offset show when the live data was read.
+`status` and `list --verbose` retain the detailed diagnostic view;
+`list --json` retains the existing status JSON contract.
+
+`Última solicitud enviada` identifies the account with the most recent recorded
+chat or image dispatch through the proxy, independently of the stored selection.
+Per-account activity files are combined with the runtime snapshot, retaining the
+newest timestamp so concurrent proxies cannot hide each other's activity. Equal
+timestamps show all matching accounts. Activity writes can take about one second
+to appear. Quota/model probes and selection changes do not count as inference.
+`—` means no inference dispatch is recorded; requests bypassing the proxy cannot
+be observed. The timestamps record dispatch attempts, including failed attempts,
+and do not confirm an in-flight request or associate accounts with individual chats.
+With `hybrid`, separate chats can use different accounts; `sequential` follows the
+active account until rotation changes it. JSON retains each account's existing
+`lastInferenceRequestAt` field (Unix milliseconds or `null`).
+
+The entire account row is colored according to weekly remaining quota: green at
+50–100%, yellow at 30–less than 50%, and red above 0–less than 30%. Rows with zero
+or unknown weekly quota retain plain text. Colors respect
+the configured terminal color profile, `NO_COLOR`, `FORCE_COLOR`, and redirected
+output; ANSI styling does not change table alignment or the JSON output.
+
+Every ordinary `list` invocation probes enabled accounts with usable credentials, even
+when the saved quota is recent. A failed or skipped probe is displayed as `N/D`
+instead of an older cached quota. Progress goes to stderr, preserving a single
+JSON object on stdout when combined with `--json`. Run `check accounts` first if
+credentials need renewing.
+
+Windows are identified by their reported duration, rather than assuming
+`primary` always means five hours. A weekly-only observation can appear in
+either slot. `N/D` means the service did not report that value or the live query
+failed; it means neither zero remaining quota nor confirmed unlimited access.
+Unclassified durations remain visible below the table. A known exhausted window
+is shown as unavailable even when the other window has quota left.
+
+Runtime rotation evaluates reported windows independently. A fresh weekly-only
+observation does not inherit an old five-hour window. The reset time is when a
+quota window recovers; account switching is driven by depletion or configured
+remaining-quota thresholds. The upstream service still enforces missing or
+unknown limits, and a rate-limit response can trigger rotation. Manual pins
+remain strict.
 
 ---
 
@@ -183,7 +287,7 @@ quota summary — percentage **left** per window plus the absolute reset time:
 ```console
 $ codex-multi-auth check
 Checking 2 account(s) with quick check + live check...
-Model probe: gpt-5.6-sol | prompt family gpt-5.2 | tool search yes | computer use yes
+Model probe: gpt-6-luna | prompt family gpt-5.2 | tool search yes | computer use yes
   ✓ Account 1 (Personal, 1@example.com) | live session OK (5h 100%, resets 18:10 | 7d 93%, resets 13:50 on Jul 29)
 ```
 
@@ -223,17 +327,15 @@ Stable, machine-readable quota snapshot for local integrations:
 
 ```console
 codex-multi-auth limits --json
-codex-multi-auth limits --json --refresh
 codex-multi-auth auth limits --json          # supported namespaced alias
 ```
 
-The default command reads the local quota cache only. `--refresh` reuses the
-dashboard's sequential quota refresh and its five-minute freshness floor: only
-enabled accounts with usable credentials and missing/stale cache entries are
-probed.
+Every invocation probes enabled accounts with usable credentials. A failed or
+skipped probe produces explicit `null` quota fields; a previous local snapshot
+is not presented as current.
 
 The top-level object has `schemaVersion: 1`, a millisecond `generatedAt`, a
-`mode` of `cached` or `refresh`, `selection`, and `accounts`. Each account
+`mode` of `live`, `selection`, and `accounts`. Each account
 includes `index`, `label` (email masked as in `forecast --json`), `enabled`,
 `current`, and either a `quota` object or `null`. Quota objects contain
 `updatedAt`, HTTP `status`, `planType`, and `primary`/`secondary` windows with
@@ -386,7 +488,7 @@ requests, and explicit strict invocation pins bypass the whole order.
 Earned subscription reset credits — separate from paid API credits:
 
 ```bash
-codex-multi-auth resets list [--refresh]
+codex-multi-auth resets list
 codex-multi-auth resets redeem <account-number>
 codex-multi-auth resets auto manual|last-resort      # default: manual
 ```
@@ -405,7 +507,7 @@ redemption stays pending under the same idempotency key — retry the same
 account explicitly. Concurrent redemptions are serialized with a five-minute
 minimum interval.
 
-`check resets` and `resets list --refresh` report how many eligible accounts
+`check resets` and `resets list` report how many eligible accounts
 could not be read and exit 1 on a partial or complete refresh failure. A
 successful read with an unavailable count remains `unknown`, not zero.
 Duplicate record/workspace identities are marked ambiguous rather than sharing
@@ -941,7 +1043,7 @@ Health and planning:
 
 ```bash
 codex-multi-auth check
-codex-multi-auth forecast --live --explain --model gpt-5.6-sol
+codex-multi-auth forecast --live --explain --model gpt-6-luna
 codex-multi-auth report --live --json
 ```
 

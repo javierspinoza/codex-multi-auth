@@ -5199,6 +5199,33 @@ it("keeps unused subscriptions behind a native pin and established reset orderin
  expect(calls.filter(c=>c.url.includes("/responses")).map(c=>c.headers.get("chatgpt-account-id"))).toEqual(["acc_1","acc_2"]);
 });
 
+it.each([40, 100])("uses a fresh weekly-only observation at %s%% used for the next request in the same chat", async weeklyUsed => {
+ const now = Date.now();
+ const manager = new AccountManager(undefined, createStorage(now));
+ const weeklyEntry = (days: number) => ({ status: 200, updatedAt: now, model: "common", planType: "plus", primary: {}, secondary: { usedPercent: 40, windowMinutes: 10080, resetAtMs: now + days * 24 * 3600000 } });
+ const cache = { byAccountId: { acc_1: weeklyEntry(7), acc_2: weeklyEntry(8) }, byEmail: {} };
+ let responseCount = 0;
+ const {calls, fetchImpl} = createRecordingFetch(call => {
+  if (call.url.includes("/models")) return Response.json({models: [{slug: "common"}]});
+  responseCount++;
+  const events = [
+   {type: "response.created", response: {id: `fixture_${responseCount}`}},
+   ...(responseCount === 1 ? [{type: "codex.rate_limits", plan_type: "plus", rate_limits: {primary: {used_percent: 97, window_minutes: 300, reset_at: Math.floor(now / 1000) + 3600}, secondary: {used_percent: 40, window_minutes: 10080, reset_at: Math.floor(now / 1000) + 7 * 86400}}}] : []),
+   {type: "codex.rate_limits", plan_type: "plus", rate_limits: {primary: null, secondary: {used_percent: responseCount === 1 ? weeklyUsed : 40, window_minutes: 10080, reset_at: Math.floor(now / 1000) + 7 * 86400}}},
+   {type: "response.completed", response: {id: `fixture_${responseCount}`, output: []}},
+  ];
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(""), {headers: {"content-type": "text/event-stream"}});
+ });
+ const proxy = await startProxy({accountManager: manager, fetchImpl, options: {nativeOpenai: true, now: () => now, quotaRemainingPercentThreshold: undefined, readSubscriptionQuota: async () => cache}});
+ const body = {model: "common", input: "fixture", stream: true, metadata: {session_id: "fixture-weekly-only-chat"}};
+ for (let i = 0; i < 2; i++) {
+  const response = await postResponses(proxy, body);
+  expect(response.status).toBe(200);
+  await response.text();
+ }
+ expect(calls.filter(call => call.url.includes("/responses")).map(call => call.headers.get("chatgpt-account-id"))).toEqual(["acc_1", weeklyUsed === 100 ? "acc_2" : "acc_1"]);
+});
+
 it("switches subscriptions at five percent from quota events on a reused WebSocket", async () => {
  const {createServer}=await import("node:http");
  const {once}=await import("node:events");

@@ -31,6 +31,7 @@ import {
 } from "../lib/quota-probe.js";
 import { CodexUnavailableError } from "../lib/errors.js";
 import {
+	CURRENT_CODEX_MODEL,
 	DEFAULT_MODEL,
 	DEFAULT_PROBE_MODEL,
 } from "../lib/request/helpers/model-map.js";
@@ -136,8 +137,8 @@ describe("quota-probe", () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("uses gpt-5.6-sol as the default quota probe model", async () => {
-		const fetchMock = vi.fn(async () =>
+	it("uses gpt-6-luna on the wire for the default quota probe", async () => {
+		const fetchMock = vi.fn(async (_url: string, _init: RequestInit) =>
 			new Response("", { status: 200, headers: makeQuotaHeaders() }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
@@ -147,52 +148,51 @@ describe("quota-probe", () => {
 			accessToken: "token-1",
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_PROBE_MODEL);
-		expect(getCodexInstructionsMock).toHaveBeenCalledWith(DEFAULT_PROBE_MODEL);
+		expect(snapshot.model).toBe("gpt-6-luna");
+		expect(getCodexInstructionsMock).toHaveBeenCalledWith("gpt-6-luna");
+		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1].body))).toMatchObject({
+			model: "gpt-6-luna",
+			instructions: "instructions:gpt-6-luna",
+			stream: true,
+			store: false,
+			reasoning: { effort: "low" },
+		});
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
-	it("falls back from the GPT-5.6 probe model to gpt-5.5 when it is unsupported", async () => {
-		// The default probe chain leads with DEFAULT_PROBE_MODEL (GPT-5.6); if the
-		// account cannot use it, the next candidate (DEFAULT_MODEL / gpt-5.5) must
-		// be tried before any codex model.
-		const unsupported = new Response(
-			JSON.stringify({
+	it.each([
+		[CURRENT_CODEX_MODEL, [DEFAULT_PROBE_MODEL]],
+		[DEFAULT_MODEL, [DEFAULT_PROBE_MODEL, CURRENT_CODEX_MODEL]],
+	] as const)("falls back from Luna to %s when preceding models are unsupported", async (winningModel, unsupportedModels) => {
+		const fetchMock = vi.fn<typeof fetch>();
+		for (const model of unsupportedModels) {
+			fetchMock.mockResolvedValueOnce(Response.json({
 				error: {
-					message: `Model ${DEFAULT_PROBE_MODEL} unsupported`,
+					message: `Model ${model} unsupported`,
 					type: "invalid_request_error",
 				},
-			}),
-			{ status: 400, headers: new Headers({ "content-type": "application/json" }) },
-		);
-		const ok = new Response("", {
+			}, { status: 400 }));
+			getUnsupportedCodexModelInfoMock.mockReturnValueOnce({
+				isUnsupported: true,
+				unsupportedModel: model,
+				message: "unsupported",
+			});
+		}
+		fetchMock.mockResolvedValueOnce(new Response("", {
 			status: 200,
 			headers: makeQuotaHeaders({ "x-codex-primary-used-percent": "11" }),
-		});
-		const fetchMock = vi.fn().mockResolvedValueOnce(unsupported).mockResolvedValueOnce(ok);
+		}));
 		vi.stubGlobal("fetch", fetchMock);
-
-		getUnsupportedCodexModelInfoMock
-			.mockReturnValueOnce({
-				isUnsupported: true,
-				unsupportedModel: DEFAULT_PROBE_MODEL,
-				message: "unsupported",
-			})
-			.mockReturnValue({
-				isUnsupported: false,
-				unsupportedModel: undefined,
-				message: undefined,
-			});
 
 		const snapshot = await fetchCodexQuotaSnapshot({
 			accountId: "acc-1",
 			accessToken: "token-1",
 		});
 
-		expect(snapshot.model).toBe(DEFAULT_MODEL);
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(1, DEFAULT_PROBE_MODEL);
-		expect(getCodexInstructionsMock).toHaveBeenNthCalledWith(2, DEFAULT_MODEL);
+		const expectedModels = [...unsupportedModels, winningModel];
+		expect(snapshot.model).toBe(winningModel);
+		expect(fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).model)).toEqual(expectedModels);
+		expect(getCodexInstructionsMock.mock.calls.map(([model]) => model)).toEqual(expectedModels);
 	});
 
 	it("falls back to next model when first model is unsupported", async () => {

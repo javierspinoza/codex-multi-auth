@@ -70,7 +70,7 @@ codex-multi-auth login
 The default flow is browser OAuth with PKCE:
 
 1. The login opens a sign-in menu; choose the browser option.
-2. A browser tab opens to OpenAI's sign-in page.
+2. A browser tab opens to OpenAI's sign-in page. The terminal also prints the full login URL so you can copy it into another browser, profile, or private window.
 3. After you approve, the browser redirects to `http://localhost:1455/auth/callback`, where a temporary local listener captures the code. The listener binds both `127.0.0.1` and `::1`; if anything already holds the port on either, it reports the conflict instead of half-listening.
 4. The account lands in the pool and the menu returns.
 

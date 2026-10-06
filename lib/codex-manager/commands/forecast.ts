@@ -380,7 +380,7 @@ export async function runForecastCommand(
 	}
 
 	// Only an explicit --model moves the forecast off the codex family. The
-	// default probe model is gpt-5.6-sol, whose family is gpt-5.2, so keying a
+	// default probe model is gpt-6-luna, whose family is gpt-5.2, so keying a
 	// bare `forecast` on it would evaluate every account against a family no
 	// wrapper request uses - /codex/responses buckets into codex.
 	//

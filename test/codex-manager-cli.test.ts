@@ -1072,6 +1072,23 @@ describe("codex manager cli commands", () => {
 		expect(storageMocks.setStoragePath).toHaveBeenCalledWith(null);
 	});
 
+	it("reports configured rotation and environment overrides in the account list", async () => {
+		storageMocks.loadAccounts.mockResolvedValue(createSettingsStorage(Date.now()));
+		const logSpy = silenceConsole("log");
+		const { runCodexMultiAuthCli } = await import("../lib/codex-manager.js");
+		try {
+			for (const [configured, override, state] of [[false, "", "inactiva"], [false, "1", "activa"], [true, "0", "inactiva"]] as const) {
+				loadPluginConfigMock.mockReturnValue({ codexRuntimeRotationProxy: configured });
+				vi.stubEnv("CODEX_MULTI_AUTH_RUNTIME_ROTATION_PROXY", override);
+				logSpy.mockClear();
+				expect(await runCodexMultiAuthCli(["auth", "list"])).toBe(0);
+				expect(logSpy).toHaveBeenCalledWith(`Rotación: ${state} · cuenta seleccionada: cuenta1 (guardada)`);
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("prints intentional-reset status with windows-style storage paths", async () => {
 		storageMocks.loadAccounts.mockResolvedValueOnce(null);
 		storageMocks.getStoragePath.mockReturnValueOnce("C:\\mock\\openai-codex-accounts.json");
@@ -1507,6 +1524,7 @@ describe("codex manager cli commands", () => {
 					email: "limits@example.com",
 					accessToken: "access-secret",
 					refreshToken: "refresh-secret",
+					expiresAt: now + 3_600_000,
 					addedAt: now,
 					lastUsed: now,
 				},
@@ -1523,6 +1541,12 @@ describe("codex manager cli commands", () => {
 				},
 			},
 			byEmail: {},
+		});
+		quotaProbeMocks.fetchCodexQuotaSnapshot.mockResolvedValue({
+			status: 200,
+			model: "gpt-5.6-codex",
+			primary: { usedPercent: 25, windowMinutes: 300 },
+			secondary: { usedPercent: 50, windowMinutes: 10_080 },
 		});
 		const logSpy = silenceConsole("log");
 		const errorSpy = silenceConsole("error");
@@ -10341,8 +10365,8 @@ describe("codex manager cli commands", () => {
 		expect(payload.accounts.enabled).toBe(1);
 		expect(payload.accounts.disabled).toBe(1);
 		expect(payload.modelSelection).toEqual({
-			requested: "gpt-5.6-sol",
-			normalized: "gpt-5.6-sol",
+			requested: "gpt-6-luna",
+			normalized: "gpt-6-luna",
 			remapped: false,
 			promptFamily: "gpt-5.2",
 			capabilities: {

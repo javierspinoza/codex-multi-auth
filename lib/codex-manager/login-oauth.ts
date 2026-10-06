@@ -12,7 +12,6 @@ import {
 import {
 	createAuthorizationFlow,
 	exchangeAuthorizationCode,
-	redactOAuthUrlForLog,
 	REDIRECT_URI,
 } from "../auth/auth.js";
 import {
@@ -304,7 +303,6 @@ export async function runOAuthFlow(
 	signInMode: Extract<OAuthSignInMode, "browser" | "manual">,
 ): Promise<TokenResult> {
 	const { pkce, state, url } = await createAuthorizationFlow({ forceNewLogin });
-	const displayUrl = redactOAuthUrlForLog(url);
 	let code: string | null = null;
 	let oauthServer: Awaited<ReturnType<typeof startLocalOAuthServer>> | null =
 		null;
@@ -338,9 +336,12 @@ export async function runOAuthFlow(
 				console.log(stylePromptText(UI_COPY.oauth.browserOpened, "success"));
 			} else {
 				console.log(stylePromptText(UI_COPY.oauth.browserOpenFail, "warning"));
-				console.log(
-					`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${displayUrl}`,
-				);
+			}
+			// Always show the exact login link so the user can choose another
+			// browser or profile, even when the automatic browser launch succeeds.
+			console.log(stylePromptText(UI_COPY.oauth.goTo, "accent"));
+			console.log(url);
+			if (!opened) {
 				const copied = copyTextToClipboard(url);
 				console.log(
 					stylePromptText(
@@ -348,14 +349,6 @@ export async function runOAuthFlow(
 						copied ? "success" : "warning",
 					),
 				);
-				if (!copied) {
-					// The redacted line is safe for normal logs, but it cannot complete
-					// an incognito/manual handoff. If clipboard access also failed,
-					// provide the exact URL as the final recovery path.
-					console.log(
-						`${stylePromptText(UI_COPY.oauth.goTo, "accent")} ${url}`,
-					);
-				}
 			}
 		} else {
 			// Manual/incognito sign-in depends on the exact authorization URL. In

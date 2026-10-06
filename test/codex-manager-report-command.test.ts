@@ -176,7 +176,7 @@ describe("runReportCommand", () => {
 		]);
 		const deps = createDeps({ loadAccounts: vi.fn(async () => storage) });
 
-		// DEFAULT_PROBE_MODEL is gpt-5.6-sol, whose family is gpt-5.2. Keying the
+		// DEFAULT_PROBE_MODEL is gpt-6-luna, whose family is gpt-5.2. Keying the
 		// no-flag invocation on it would report this account ready while every
 		// /codex/responses request 503s off the very same record.
 		await expect(runReportCommand(["--json"], deps)).resolves.toBe(0);

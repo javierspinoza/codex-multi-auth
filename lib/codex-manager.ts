@@ -88,11 +88,14 @@ import { runUninstallCommand } from "./codex-manager/commands/uninstall.js";
 import { clearAccountsAndCredentialSidecars } from "./storage/credential-sidecars.js";
 import { runForecastCommand } from "./codex-manager/commands/forecast.js";
 import { runInitConfigCommand } from "./codex-manager/commands/init-config.js";
+import { runListCommand } from "./codex-manager/commands/list.js";
+import { runListHolaCommand } from "./codex-manager/list-hola.js";
 import { runReportCommand } from "./codex-manager/commands/report.js";
 import { runRotationCommand } from "./codex-manager/commands/rotation.js";
 import {
 	runFeaturesCommand,
 	runStatusCommand,
+	type StatusCommandDeps,
 } from "./codex-manager/commands/status.js";
 import { loadPersistedRuntimeObservabilitySnapshot } from "./runtime/runtime-observability.js";
 import { runSwitchCommand } from "./codex-manager/commands/switch.js";
@@ -391,10 +394,9 @@ export function buildSelectAccountTraced(): (
 type CliCommandHandler = (rest: string[]) => number | Promise<number>;
 
 /**
- * Shared handler for `list` and `status` (aliases of the same view).
+ * Shared data sources for the compact list and detailed status views.
  */
-const runListOrStatusCommand: CliCommandHandler = (rest) =>
-	runStatusCommand({
+const createStatusCommandDeps = (rest: string[]): StatusCommandDeps => ({
 		loadApiRoutes,
 		loadResetCreditState,
 		loadInferenceRequestTimes,
@@ -419,7 +421,7 @@ const runListOrStatusCommand: CliCommandHandler = (rest) =>
  * Command registry for the `auth` dispatcher (audit roadmap §4.1.1 phase 2).
  *
  * Replaces the former `if (command === …)` chain in runCodexMultiAuthCli with
- * a lookup map. Aliases (`status` → `list` view) point at the same handler.
+ * a lookup map. List and status share the JSON contract and data sources.
  * Per-invocation dependency factories (createRepairCommandDeps,
  * buildSelectAccountTraced) are still invoked inside each handler so they are
  * constructed at dispatch time, not at module load — identical to the old
@@ -431,16 +433,20 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	CliCommandHandler
 >([
 	["login", (rest) => runAuthLogin(rest, { runForecast, createRepairCommandDeps })],
-	["list", runListOrStatusCommand],
-	["status", runListOrStatusCommand],
+	["list", (rest) => runListCommand(rest, {
+		...createStatusCommandDeps(rest),
+		runHola: runListHolaCommand,
+		isRotationEnabled: () => getCodexRuntimeRotationProxy(loadPluginConfig()),
+		refreshQuotaCache: (storage, cache, maxAgeMs) => refreshQuotaCacheForMenu(storage, cache, maxAgeMs, undefined, { freshOnly: true }),
+	})],
+	["status", (rest) => runStatusCommand(createStatusCommandDeps(rest))],
 	[
 		"limits",
 		(rest) =>
 			runLimitsCommand(rest, {
 				setStoragePath,
 				loadAccounts,
-				loadQuotaCache,
-				refreshQuotaCache: refreshQuotaCacheForMenu,
+				refreshQuotaCache: (storage, cache, maxAgeMs, options) => refreshQuotaCacheForMenu(storage, cache, maxAgeMs, undefined, options),
 				resolveActiveIndex,
 			}),
 	],
@@ -474,7 +480,7 @@ const CLI_COMMAND_HANDLERS: ReadonlyMap<string, CliCommandHandler> = new Map<
 	],
 	["check", (rest) => runCheckCommand({
   runHealthCheck,
-  runResetCheck: () => runResetsCommand(["list", "--refresh"]),
+  runResetCheck: () => runResetsCommand(["list"]),
   runCapabilityCheck: () => refreshAndPrintModelInventory(console.log, { forceProbes: true }),
  }, rest)],
 	[

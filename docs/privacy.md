@@ -48,10 +48,16 @@
 | --- | --- |
 | `auth.openai.com` | OAuth sign-in, device-code flow, token refresh |
 | ChatGPT/Codex backend | The requests you make through Codex, carrying the selected account's token |
+| `api.openai.com` | Optional API-key routes: model discovery, capability probes, and Responses requests |
+| `developers.openai.com` | Model capability documentation for optional API-key routes |
 | GitHub (raw/releases) | Prompt-template sync with ETag caching |
 | npm registry | Optional best-effort daily version check during forwarded wrapper startup |
 
 Local listeners — the OAuth callback on `localhost:1455`, the rotation proxy, the app router, and the optional local bridge — are loopback-only. The proxy and router authenticate local clients with a per-process random token and forward upstream; the bridge requires a bearer token.
+
+Session transcripts remain local files under `$CODEX_HOME/sessions/` (by default `~/.codex/sessions/`). The `history` command reads those files locally. The wrapper links or copies directories into its temporary shadow home and copies changed state back locally; this is not remote backup or cloud synchronization. Inference requests still send messages and conversation context to the selected upstream. Local transcript storage does not mean that the model runs offline, and `store: false` is not a guarantee of zero provider retention.
+
+The official Codex CLI, configured MCP servers, plugins, and commands such as `codex cloud` have their own network behavior. Codex documents its metrics setting separately: `[analytics] enabled = false` disables its metrics collection; see [official configuration documentation](https://learn.chatgpt.com/docs/config-file/config-advanced#metrics). This project's lack of a telemetry pipeline does not disable telemetry or networking in those other components.
 
 ---
 
@@ -59,7 +65,7 @@ Local listeners — the OAuth callback on `localhost:1455`, the rotation proxy, 
 
 - Access and refresh tokens exist only in the pool file and the official `~/.codex/auth.json` they sync to.
 - Tokens are **never** written to logs. Where a log must identify a token, it prints an 8-character SHA-256 fingerprint — never the value.
-- OAuth URLs printed to the terminal redact `state`, `code`, and PKCE parameters. The exception is `--manual` mode, which must print the full URL for you to copy.
+- Diagnostic OAuth URL logging redacts `state`, `code`, and PKCE parameters. The account manager prints the full authorization URL directly to the terminal in both browser and manual modes so you can choose a browser, profile, or private window.
 - The device-code flow's PKCE verifier is never persisted — it goes straight to the token exchange.
 - Usage-ledger rows carry hashed identifiers only: no prompts, no auth headers, no raw account ids.
 
