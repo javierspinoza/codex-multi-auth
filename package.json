@@ -177,13 +177,13 @@
 	"dependencies": {
 		"@codex-ai/plugin": "file:vendor/codex-ai-plugin",
 		"@codex-ai/sdk": "file:vendor/codex-ai-sdk",
-		"hono": "4.13.13",
+		"hono": "4.13.16",
 		"undici": "8.11.2",
 		"ws": "8.22.0",
 		"zod": "4.6.5"
 	},
 	"overrides": {
-		"hono": "4.13.13",
+		"hono": "4.13.16",
 		"flatted": "3.4.2",
 		"minimatch": {
 			".": "10.2.4",
